@@ -12,7 +12,8 @@ import cliProgress, {MultiBar} from "cli-progress";
 const config: Config = require("../../config.json");
 
 class AnilistClient {
-    private readonly limiter: RateLimiter;
+    private readonly mainLimiter: RateLimiter;
+    private readonly perTokenLimiter: RateLimiter;
     private readonly api_url: string = "https://graphql.anilist.co";
     private readonly token = {
         access_token: "",
@@ -27,9 +28,13 @@ class AnilistClient {
     private media_to_entry_id: Map<string, string> = new Map();
 
     constructor() {
-        this.limiter = new RateLimiter({
+        this.mainLimiter = new RateLimiter({
             tokensPerInterval: 80,
             interval: 60 * 1000
+        });
+        this.perTokenLimiter = new RateLimiter({
+            tokensPerInterval: 1,
+            interval: 500
         });
     }
 
@@ -383,7 +388,8 @@ class AnilistClient {
     }
 
     public async query(query: string, variables: any = {}, retry: boolean = true): Promise<any> {
-        await this.limiter.removeTokens(1);
+        await this.perTokenLimiter.removeTokens(1);
+        await this.mainLimiter.removeTokens(1);
 
         try {
             const response = await axios.post(this.api_url, JSON.stringify({
@@ -391,9 +397,9 @@ class AnilistClient {
                 variables
             }), {headers: this.headers});
             let requestRemain = Number(response.headers['x-ratelimit-remaining']);
-            let limiterRemain = this.limiter.getTokensRemaining();
+            let limiterRemain = this.mainLimiter.getTokensRemaining();
             if (requestRemain < limiterRemain) {
-                await this.limiter.removeTokens(limiterRemain - requestRemain);
+                await this.mainLimiter.removeTokens(limiterRemain - requestRemain);
             }
             return response.data;
         } catch (error: any) {
@@ -404,11 +410,6 @@ class AnilistClient {
                 return await this.query(query, variables, false);
             }
             console.error(error);
-            // if (error.response.headers['x-ratelimit-remaining'] == '0') {
-            //     setTimeout(() => {
-            //     }, error.response.headers['Retry-After'] * 1000);
-            //     return this.query(query, variables);
-            // }
             return null;
         }
     }
@@ -517,7 +518,7 @@ class AnilistClient {
         }
 
         try {
-            await this.limiter.removeTokens(1);
+            await this.mainLimiter.removeTokens(1);
             const response = await axios.post(token_url, params);
             let token = response.data;
             this.token.access_token = token.access_token;
@@ -542,7 +543,7 @@ class AnilistClient {
         }
 
         try {
-            await this.limiter.removeTokens(1);
+            await this.mainLimiter.removeTokens(1);
             const response = await axios.post(url, params);
             let token = response.data;
             this.token.access_token = token.access_token;
