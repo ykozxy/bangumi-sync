@@ -42,7 +42,7 @@ npm start
 
 `manual_relation.js` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
 
-`ignore_entries.config.json` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会被忽略它们。
+`ignore_entries.js` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会被忽略它们。
 
 ## 条目匹配原理
 
@@ -51,7 +51,7 @@ npm start
 
 经测试，本人 bangumi 收藏中的 250+ 个动画条目仅有 22 个匹配失败。去除欧美动画以及 bangumi 本身信息缺失的条目，仅有 9 个因为数据库信息不匹配而导致失败。总成功率约为 95%。
 
-匹配的具体实现方式可参考 [data_util.ts](src/utils/data_util.ts)，欢迎提出更好的匹配算法想法。
+匹配的具体实现方式在 [data_util.ts](src/utils/data_util.ts) 中。
 
 ## 已知限制
 
