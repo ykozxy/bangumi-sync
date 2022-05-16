@@ -1,4 +1,7 @@
 # Project exclude paths
 /build/
 /cache/
+/log/
 /node_modules/
+
+package-lock.json

@@ -16,11 +16,11 @@ import {
     GlobalAnimeType,
     Season
 } from "../types/global_anime_data";
-import {Config} from "../types/config";
+import {Config, IgnoreEntries, ManualRelations} from "../types/config";
 import {EtagType, Relation} from "../types/cache";
 import {getEtagCache, setEtagCache} from "./cache_util";
 import {bangumiClient} from "./bangumi_client";
-import {MultiBar, SingleBar} from "cli-progress";
+import {autoLogException, autoLog, incrementProgressBar, LogLevel} from "./log_util";
 
 const config: Config = require("../../config.json");
 
@@ -29,6 +29,9 @@ let global_anime_data: GlobalAnimeData;
 const bgm_id_map: Map<string, ChinaAnimeItem> = new Map();
 const mal_id_map: Map<string, GlobalAnimeItem[]> = new Map();
 let known_relations: Relation[] = [];
+
+export const manual_relations: ManualRelations = require("../../manual_relations.json");
+export const ignore_entries: IgnoreEntries = require("../../ignore_entries.json");
 
 /**
  * @description Load anime data from local cache, and update cache if new data is available.
@@ -133,50 +136,42 @@ export async function getGlobalAnimeItemByMal(mal_id: string): Promise<GlobalAni
     return null;
 }
 
-export async function getGlobalAnimeItemByAnilist(anilist: string): Promise<GlobalAnimeItem | null> {
-    global_anime_data.data.forEach(item => {
+/**
+ * @description Get global anime object by anilist id. Because this function is not frequently called, performance is not optimized.
+ * @param anilist_id anilist id of the anime.
+ */
+export async function getGlobalAnimeItemByAnilist(anilist_id: string): Promise<GlobalAnimeItem | null> {
+    for (let item of global_anime_data.data) {
         let res = item?.sources.find(site => {
-            return site.match(/anilist/)
+            return site.match(/anilist/);
         })?.match(/anime\/(\d+)/)![1];
-        if (res == anilist) {
+        if (res == anilist_id) {
             return item;
         }
-    });
+    }
     return null;
 }
 
 /**
  * @description Try to match a China anime object to global object.
  * @param cn China anime object.
- * @param progressBar Progress bar instance.
- * @param progressBarMulti Multibar instance.
  * @param titleSimilarityThreshold Lower bound of title similarity when fuzzy matching.
  * @param matchMonth Default is true. If true, only match anime that aired in the same month.
  * @param matchFormat Default is true. If true, only match anime that has the same format (be cautious, the format in cn and global database may be different).
  * @returns The matched global anime object, or null if not found.
  */
-export async function matchChinaToGlobal(cn: ChinaAnimeItem, progressBar?: SingleBar, progressBarMulti?: MultiBar, titleSimilarityThreshold: number = 0.75, matchMonth: boolean = true, matchFormat: boolean = true): Promise<GlobalAnimeItem | null> {
-    function progressBarLog(content: string) {
-        if (progressBarMulti) {
-            progressBarMulti.log(content + "\n");
-        } else {
-            console.log(content);
-        }
-    }
-
+export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThreshold: number = 0.75, matchMonth: boolean = true, matchFormat: boolean = true): Promise<GlobalAnimeItem | null> {
     // First, check known relations
     const bgm_id = getBgmId(cn);
     if (!bgm_id) {
-        progressBarLog(`[${matchChinaToGlobal.name}] Failed to find BGM id for "${cn.title}"`);
-        progressBar?.increment();
-        progressBar?.render();
+        autoLog(`Failed to find BGM id for "${cn.title}.`, "matchEntry", LogLevel.Warn);
+        incrementProgressBar();
         return null;
     }
     let mal_id = known_relations.find(r => r.bgm_id === bgm_id)?.mal_id;
     if (mal_id) {
-        // progressBarLog(`[${matchChinaToGlobal.name}] Found known relation for "${cn.title}"`);
-        progressBar?.increment();
-        progressBar?.render();
+        autoLog(`Found known relation for "${cn.title}".`, "matchEntry", LogLevel.Debug);
+        incrementProgressBar();
         return await getGlobalAnimeItemByMal(mal_id);
     }
 
@@ -226,14 +221,12 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, progressBar?: Singl
         // Save known relations
         fs.writeFileSync(config.cache_path + '/known_relations.json', JSON.stringify(known_relations, null, 4));
 
-        progressBarLog(`[${matchChinaToGlobal.name}] score=${score}, "${cn.title}" matched to "${anime.title}"`);
-        progressBar?.increment();
-        progressBar?.render();
+        autoLog(`score=${score}, "${cn.title}" matched to "${anime.title}"`, "matchEntry", LogLevel.Info);
+        incrementProgressBar();
         return anime;
     }
 
-    progressBar?.increment();
-    progressBar?.render();
+    incrementProgressBar();
     return null;
 }
 
@@ -315,11 +308,7 @@ export async function compareChinaWithGlobal(china: ChinaAnimeItem, global: Glob
         }
     }
     // Check episode count as a backup
-    if (mismatch && (!strictMode && (await bangumiClient.getSubjectById(<string>getBgmId(china)))?.total_episodes !== global.episodes)) {
-        return false;
-    }
-
-    return true;
+    return !(mismatch && (!strictMode && (await bangumiClient.getSubjectById(<string>getBgmId(china)))?.total_episodes !== global.episodes));
 }
 
 /**
@@ -341,7 +330,7 @@ export function getMalId(gl: GlobalAnimeItem): string | null {
 }
 
 
-export async function getAnilistId(malId: string): Promise<string | null> {
+export function getAnilistId(malId: string): string | null {
     let gls = mal_id_map.get(malId);
     if (!gls) return null;
     for (let gl of gls) {
@@ -365,8 +354,8 @@ async function autoUpdateDatabase(): Promise<void> {
         china_etag = (await axios.head(config.china_anime_database_url)).headers['etag'];
         global_etag = (await axios.head(config.global_anime_database_url)).headers['etag'];
     } catch (e) {
-        console.error("Failed to fetch etag from url.");
-        console.error(e);
+        autoLog("Failed to fetch etag from url.", "updateDatabase", LogLevel.Error);
+        autoLogException(e as Error);
         return;
     }
 
@@ -374,12 +363,12 @@ async function autoUpdateDatabase(): Promise<void> {
     if (china_etag !== getEtagCache(EtagType.China) || !fs.existsSync(config.cache_path + '/china_anime.json')) {
         let china_data: ChinaAnimeData;
         try {
-            console.log('Updating china_anime database from ' + config.china_anime_database_url);
+            autoLog("Updating china_anime database from " + config.china_anime_database_url, "updateDatabase", LogLevel.Info);
             china_data = await axios.get(config.china_anime_database_url).then(res => res.data);
             fs.writeFileSync(config.cache_path + '/china_anime.json', JSON.stringify(china_data));
         } catch (e) {
-            console.error("Unable to fetch china_anime database: ");
-            console.error(e);
+            autoLog("Unable to fetch china_anime database: ", "updateDatabase", LogLevel.Error);
+            autoLogException(e as Error);
         }
         setEtagCache(EtagType.China, china_etag);
     }
@@ -387,20 +376,15 @@ async function autoUpdateDatabase(): Promise<void> {
     if (global_etag !== getEtagCache(EtagType.Global) || !fs.existsSync(config.cache_path + '/global_anime.json')) {
         let global_data: GlobalAnimeData;
         try {
-            console.log('Updating global_anime database from ' + config.global_anime_database_url);
+            autoLog("Updating global_anime database from " + config.global_anime_database_url, "updateDatabase", LogLevel.Info);
             global_data = await axios.get(config.global_anime_database_url).then(res => res.data);
             fs.writeFileSync(config.cache_path + '/global_anime.json', JSON.stringify(global_data));
         } catch (e) {
-            console.error("Unable to fetch global_anime database: ");
-            console.error(e);
+            autoLog("Unable to fetch global_anime database: ", "updateDatabase", LogLevel.Error);
+            autoLogException(e as Error);
         }
         setEtagCache(EtagType.Global, global_etag);
     }
-}
-
-
-function clearLine() {
-    process.stdout.write("\x1B[2K\r");
 }
 
 // Update cache every 12 hours

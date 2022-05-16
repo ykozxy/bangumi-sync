@@ -7,7 +7,8 @@ import {Media, MediaFormat, MediaList, MediaListStatus} from "../types/anilist_a
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {getAnilistId, getGlobalAnimeItemByMal} from "./data_util";
 import {GlobalAnimeType, Season} from "../types/global_anime_data";
-import cliProgress, {MultiBar} from "cli-progress";
+import open from "open";
+import {autoLog, autoLogException, createProgressBar, incrementProgressBar, LogLevel} from "./log_util";
 
 const config: Config = require("../../config.json");
 
@@ -108,7 +109,7 @@ class AnilistClient {
 
         let result: MediaList[] = [];
         while (1) {
-            let data = (await this.query(query, variables)).data;
+            let data = await this.query(query, variables);
             if (!data) return null;
 
             // Add to id map
@@ -152,13 +153,7 @@ class AnilistClient {
             }
         }[] = [];
 
-        const progressBar = new cliProgress.MultiBar({
-            stopOnComplete: true,
-            etaBuffer: 100,
-            hideCursor: true,
-            forceRedraw: true,
-        }, cliProgress.Presets.shades_classic);
-        const bar1 = progressBar.create(collection.length, 0, {});
+        createProgressBar(collection.length);
 
         let successCount = 0;
 
@@ -190,9 +185,8 @@ class AnilistClient {
                     if (!id) {
                         let id2 = await this.getId(Number(c.mal_id));
                         if (!id2) {
-                            progressBar.log(`[Anilist] Could not find anilist ID for ${c.title} (mal=${c.mal_id}).`);
-                            bar1.increment();
-                            progressBar.update();
+                            autoLog(`Could not find anilist ID for ${c.title} (mal=${c.mal_id}).`, "Anilist.smartUpdateCollection", LogLevel.Warn);
+                            incrementProgressBar();
                             continue;
                         }
                         id = String(id2);
@@ -202,11 +196,10 @@ class AnilistClient {
 
                 if (!this.media_to_entry_id.has(c.anilist_id)) {
                     // For anime not in the list, we need to create a new entry.
-                    if (await this.saveEntry(c, syncComment, progressBar)) {
+                    if (await this.saveEntry(c, syncComment)) {
                         successCount++;
                     }
-                    bar1.increment();
-                    progressBar.update();
+                    incrementProgressBar();
                     continue;
                 }
                 ids.push(Number(this.media_to_entry_id.get(c.anilist_id)));
@@ -223,19 +216,16 @@ class AnilistClient {
         // Update
         for (let variable of variables) {
             await this.query(query, variable);
-            bar1.increment(variable.ids.length);
-            progressBar.update();
+            incrementProgressBar(variable.ids.length);
             successCount += variable.ids.length;
         }
 
         return successCount;
     }
 
-    public async saveEntry(collection: AnimeCollection, syncComment: boolean = false, bar: MultiBar | null = null): Promise<boolean> {
+    public async saveEntry(collection: AnimeCollection, syncComment: boolean = false): Promise<boolean> {
         if (!collection.anilist_id) {
-            let str = `[Anilist] Failed to save ${collection.title} (mal=${collection.mal_id}), empty anilist ID.`;
-            if (bar) bar.log(str);
-            else console.error(str);
+            autoLog(`Failed to save ${collection.title} (mal=${collection.mal_id}), empty anilist ID.`, "Anilist.saveEntry", LogLevel.Error);
             return false;
         }
 
@@ -256,8 +246,9 @@ class AnilistClient {
         let result = await this.query(query, variables);
         if (result.SaveMediaListEntry) {
             this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
+            return true;
         }
-        return true;
+        return false;
     }
 
     public async getId(mal_id: number): Promise<number | null> {
@@ -284,7 +275,7 @@ class AnilistClient {
           } 
         }`;
         const variables = {'id': mal_id};
-        const data = (await this.query(query, variables)).data;
+        const data = await this.query(query, variables);
         if (!data) return null;
 
         let gl = await getGlobalAnimeItemByMal(String(mal_id));
@@ -380,7 +371,7 @@ class AnilistClient {
         const variables = {'title': title};
 
         let result: Media[] = [];
-        let data = (await this.query(query, variables)).data;
+        let data = await this.query(query, variables);
         if (!data) return null;
         result = result.concat(data.Page.media);
 
@@ -401,15 +392,15 @@ class AnilistClient {
             if (requestRemain < limiterRemain) {
                 await this.mainLimiter.removeTokens(limiterRemain - requestRemain);
             }
-            return response.data;
+            return response.data.data;
         } catch (error: any) {
-            console.error(`[Anilist] Network error when querying. Retrying...`);
+            autoLog(`Network error when querying. Retrying...`, "Anilist.query", LogLevel.Error);
             if (retry) {
                 await setTimeout(() => {
                 }, 1000);
                 return await this.query(query, variables, false);
             }
-            console.error(error);
+            autoLogException(error as Error);
             return null;
         }
     }
@@ -437,7 +428,7 @@ class AnilistClient {
 
         // Refresh the token
         if (!await this.refreshToken()) {
-            console.error("[Anilist] Failed to refresh anilist token.");
+            autoLog("Failed to refresh anilist token.", "Anilist.checkToken", LogLevel.Warn);
             await this.getToken();
         }
 
@@ -455,9 +446,9 @@ class AnilistClient {
                 }
             }
         `);
-        this.user_id = user.data.Viewer.id;
+        this.user_id = user.Viewer.id;
         if (!this.user_id) {
-            throw new Error("[Anilist] Failed to get user id.");
+            throw new Error("Failed to get user id.");
         }
 
         // Get user timezone
@@ -473,7 +464,7 @@ class AnilistClient {
         let variables = {
             id: this.user_id
         };
-        let data = (await this.query(query, variables)).data;
+        let data = await this.query(query, variables);
         this.user_timezone = data.User.options.timezone;
     }
 
@@ -481,7 +472,7 @@ class AnilistClient {
         // Setup callback server
         let code = "";
         const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-            const html = "<html lang='en'><head><title>[BGM-Sync] Token generated</title></head><body><h3>Token generated! Please close this window.</h3></body></html>";
+            const html = `<html lang='en'><head><title>[BGM-Sync] Token generated</title></head><body><h1>Token generated! Please close this window.</h1></body></html>`;
             response.writeHead(200, {
                 "Content-Type": "text/html",
                 "Content-Length": Buffer.byteLength(html),
@@ -496,7 +487,8 @@ class AnilistClient {
         server.listen(3499);
 
         const auth_url = `https://anilist.co/api/v2/oauth/authorize?client_id=7280&redirect_uri=http://localhost:3499&response_type=code`
-        console.log(`[Anilist] Open the url to authorize with anilist: ${auth_url}`);
+        // console.log(`[Anilist] Open the url to authorize with anilist: ${auth_url}`);
+        await open(auth_url);
 
         await new Promise((resolve) => {
             function check() {
@@ -526,8 +518,8 @@ class AnilistClient {
             this.token.expires_in = new Date(Date.now() + token.expires_in * 1000);
             this.token.token_type = token.token_type;
         } catch (e: any) {
-            console.error("[Anilist] Failed to get anilist token.");
-            console.error(e.response);
+            autoLog("Failed to get anilist token.", "Anilist", LogLevel.Error);
+            autoLogException(e as Error);
             process.exit(1);
         }
     }
@@ -552,8 +544,8 @@ class AnilistClient {
             this.token.token_type = token.token_type;
             return true;
         } catch (e: any) {
-            console.error("[Anilist] Failed to refresh anilist token.");
-            console.error(e.response);
+            autoLog("Failed to refresh anilist token.", "Anilist", LogLevel.Error);
+            autoLogException(e as Error);
             return false;
         }
     }

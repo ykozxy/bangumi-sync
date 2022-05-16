@@ -2,11 +2,21 @@ import {anilistClient} from "./anilist_client";
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {MediaListStatus} from "../types/anilist_api";
 import {bangumiClient} from "./bangumi_client";
-import cliProgress from "cli-progress";
 import Scheduler from "./scheduler";
 import {GlobalAnimeItem} from "../types/global_anime_data";
-import {compareChinaWithGlobal, getChinaAnimeItem, getGlobalAnimeItemByMal, getMalId, matchChinaToGlobal} from "./data_util";
+import {
+    compareChinaWithGlobal,
+    getAnilistId,
+    getChinaAnimeItem,
+    getGlobalAnimeItemByAnilist,
+    getGlobalAnimeItemByMal,
+    getMalId,
+    ignore_entries,
+    manual_relations,
+    matchChinaToGlobal
+} from "./data_util";
 import stringSimilarity from "string-similarity";
+import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
 
 
 /**
@@ -47,7 +57,9 @@ export async function getAnilistCollections(): Promise<AnimeCollection[]> {
             update_time = new Date(0);
         }
 
-        // TODO: handle anilist media entry
+        // Skip if in ignore list
+        if (ignore_entries.anilist.includes(mediaList.media.id)) continue;
+        if (ignore_entries.mal.includes(mediaList.media.idMal)) continue;
 
         res.push({
             title: mediaList.media.title.native,
@@ -92,6 +104,9 @@ export async function getBangumiCollections(): Promise<AnimeCollection[]> {
                 break;
         }
 
+        // Skip if in ignore list
+        if (ignore_entries.bangumi.includes(entry.subject_id)) continue;
+
         res.push({
             // title: (await getChinaAnimeItem(String(entry.subject_id)))?.title,
             bgm_id: String(entry.subject_id),
@@ -112,34 +127,51 @@ export async function getBangumiCollections(): Promise<AnimeCollection[]> {
  */
 export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]): Promise<AnimeCollection[]> {
     // Setup progress bar
-    const progressBar = new cliProgress.MultiBar({
-        stopOnComplete: true,
-        etaBuffer: 100,
-        hideCursor: true,
-        forceRedraw: true,
-    }, cliProgress.Presets.shades_classic);
-    const bar1 = progressBar.create(bangumiCollection.length, 0, {});
+    createProgressBar(bangumiCollection.length);
 
     // Schedule fixed amount of async jobs at most to avoid blocking and delays in console.log
-    let scheduler = new Scheduler(10);
+    let scheduler = new Scheduler(15);
     let result: Array<{ bgm: AnimeCollection, global?: GlobalAnimeItem }> = new Array(bangumiCollection.length);
     for (let i = 0; i < bangumiCollection.length; i++) {
         let bangumiItem = bangumiCollection[i];
         scheduler.push(async () => {
             if (!bangumiItem.bgm_id) {
-                bar1.increment();
-                progressBar.log(`[fillBangumiCollection] ${bangumiItem} has no bgm_id.\n`);
+                incrementProgressBar();
+                autoLog(`${bangumiItem} has no bgm_id.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
                     bgm: bangumiItem,
                 };
                 return;
             }
 
+            // Ignore if in ignore_entries
+            if (ignore_entries.bangumi.find(r => String(r) === bangumiItem.bgm_id)) {
+                incrementProgressBar();
+                result[i] = {
+                    bgm: bangumiItem,
+                };
+                return;
+            }
+
+            // If in manual relation, fetch the entry directly
+            let manual_id = manual_relations.find(r => String(r[0]) === bangumiItem.bgm_id);
+            if (manual_id && manual_id[1]) {
+                let gl = await getGlobalAnimeItemByAnilist(String(manual_id[1]));
+                if (gl) {
+                    incrementProgressBar();
+                    result[i] = {
+                        bgm: bangumiItem,
+                        global: gl,
+                    };
+                    return;
+                }
+            }
+
             // Get China anime object
             const chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
             if (!chinaItem) {
-                bar1.increment();
-                progressBar.log(`[fillBangumiCollection] Cannot construct cn_anime object for ${bangumiItem.bgm_id}.\n`);
+                incrementProgressBar()
+                autoLog(`Cannot construct cn_anime object for bgm=${bangumiItem.bgm_id}.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
                     bgm: bangumiItem,
                 };
@@ -147,7 +179,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             }
 
             // Match China anime object to global
-            const globalItem = await matchChinaToGlobal(chinaItem, bar1, progressBar);
+            const globalItem = await matchChinaToGlobal(chinaItem);
             if (globalItem) {
                 result[i] = {
                     bgm: bangumiItem,
@@ -183,7 +215,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
                 }
             }
 
-            progressBar.log(`[fillBangumiCollection] Cannot match ${chinaItem.title} (${bangumiItem.bgm_id}) to an global anime object.\n`);
+            autoLog(`Cannot match ${chinaItem.title} (${bangumiItem.bgm_id}) to an global anime object.`, "matchEntry", LogLevel.Warn);
             result[i] = {
                 bgm: bangumiItem,
             };
@@ -191,18 +223,24 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
         })
     }
     await scheduler.wait(); // Wait for all jobs to finish
-    bar1.stop();
+    stopProgressBar();
 
-    // Fill mal_id to each collection
+    // Fill mal_id and anilist_id to each collection
     let failedCount = 0;
     for (let globalMatchedElement of result) {
         if (!globalMatchedElement.global) {
             failedCount++;
         } else {
             globalMatchedElement.bgm.mal_id = getMalId(globalMatchedElement.global) || undefined;
+
+            let manual_id = manual_relations.find(r => String(r[0]) === globalMatchedElement.bgm.bgm_id);
+            globalMatchedElement.bgm.anilist_id = manual_id ? String(manual_id[1]) : undefined;
+            if (!globalMatchedElement.bgm.anilist_id && globalMatchedElement.bgm.mal_id) {
+                globalMatchedElement.bgm.anilist_id = getAnilistId(globalMatchedElement.bgm.mal_id) || undefined;
+            }
         }
     }
-    console.log(`${failedCount}/${result.length} entries cannot be matched.`);
+    autoLog(`${failedCount}/${result.length} entries cannot be matched.`, "matchEntry", LogLevel.Info);
 
     return result.map(element => element.bgm);
 }
@@ -212,16 +250,27 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
     for (let bangumi of bangumiCollection) {
-        if (!bangumi.mal_id) continue;
+        if (!bangumi.mal_id && !bangumi.anilist_id) continue;
 
         // Fix bangumi episode count
-        let globalEpisodeCount = await getGlobalAnimeItemByMal(bangumi.mal_id).then(item => item?.episodes || 0);
+        let globalEpisodeCount: number;
+        if (bangumi.mal_id) {
+            globalEpisodeCount = await getGlobalAnimeItemByMal(bangumi.mal_id).then(item => item?.episodes || 0);
+        } else {
+            globalEpisodeCount = await getGlobalAnimeItemByAnilist(String(bangumi.anilist_id)).then(item => item?.episodes || 0);
+        }
         if (bangumi.status == CollectionStatus.Completed || bangumi.watched_episodes > globalEpisodeCount) {
             bangumi.watched_episodes = globalEpisodeCount;
         }
 
         // If the entry don't exist in to, add it to result
-        let anilist = anilistCollection.find(col => col.mal_id === bangumi.mal_id);
+        let anilist = anilistCollection.find(col => {
+            if (bangumi.anilist_id) {
+                return col.anilist_id === bangumi.anilist_id;
+            } else {
+                return col.mal_id === bangumi.mal_id;
+            }
+        });
         if (!anilist) {
             result.push({
                 after: bangumi,
@@ -233,6 +282,10 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
         bangumi.mal_id = anilist.mal_id;
         bangumi.anilist_id = anilist.anilist_id;
         anilist.bgm_id = bangumi.bgm_id;
+
+        // Syne titles
+        if (!anilist.title) anilist.title = bangumi.title;
+        if (!bangumi.title) bangumi.title = anilist.title;
 
         // Compare entries for changes
         if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes) {

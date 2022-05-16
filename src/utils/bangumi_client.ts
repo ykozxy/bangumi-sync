@@ -5,6 +5,7 @@ import {Config} from "../types/config";
 import {createServer, IncomingMessage, ServerResponse} from 'http';
 import fs from "fs";
 import {memoize} from "decko";
+import open from "open";
 
 const config: Config = require("../../config.json");
 
@@ -156,7 +157,7 @@ class BangumiClient {
         // Setup callback server
         let code: string = "";
         const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-            const html = "<html lang='en'><head><title>[BGM-Sync] Token generated</title></head><body><h3>Token generated! Please close this window.</h3></body></html>";
+            const html = "<html lang='en'><head><title>[BGM-Sync] Token generated</title></head><body><h1>Token generated! Please close this window.</h1></body></html>";
             response.writeHead(200, {
                 "Content-Type": "text/html",
                 "Content-Length": Buffer.byteLength(html),
@@ -171,7 +172,8 @@ class BangumiClient {
 
         // Prompt user to token generation web page
         const auth_url = `https://bgm.tv/oauth/authorize?client_id=bgm2304627c3f99e9682&response_type=code&redirect_uri=http://localhost:3498`;
-        console.log(`[Bangumi] Open the url to authorize with bgm.tv: ${auth_url}`);
+        // console.log(`[Bangumi] Open the url to authorize with bgm.tv: ${auth_url}`);
+        await open(auth_url);
 
         await new Promise((resolve) => {
             function check() {
