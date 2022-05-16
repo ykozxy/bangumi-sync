@@ -42,7 +42,7 @@ npm start
 
 `manual_relation.js` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
 
-`ignore_entries.js` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会被忽略它们。
+`ignore_entries.js` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会忽略它们。
 
 ## 条目匹配原理
 
