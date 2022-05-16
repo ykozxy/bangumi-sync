@@ -1,12 +1,13 @@
 {
   "name": "bangumi-sync",
   "version": "1.0.0",
-  "description": "",
-  "main": "main.js",
+  "description": "A script that automatically syncs all anime collections from bgm.tv to Anilist.",
+  "main": "build/main.js",
   "scripts": {
     "start": "npm run build && node build/main.js",
-    "build": "rimraf ./build && tsc",
-    "start:dev": "nodemon"
+    "server:start": "npm run build && pm2 start build/main.js --name bangumi-sync -- --server",
+    "server:stop": "pm2 stop bangumi-sync",
+    "build": "rimraf ./build && tsc"
   },
   "keywords": ["bangumi", "anilist", "anime", "sync", "node", "typescript"],
   "author": "ykozxy",
@@ -15,7 +16,6 @@
     "@types/cli-progress": "^3.11.0",
     "@types/node": "^17.0.31",
     "@types/string-similarity": "^4.0.0",
-    "nodemon": "^2.0.16",
     "rimraf": "^3.0.2",
     "ts-node": "^10.7.0",
     "typescript": "^4.6.4"
@@ -24,7 +24,6 @@
     "axios": "^0.27.2",
     "chalk": "4.1.2",
     "cli-progress": "^3.11.0",
-    "decko": "^1.2.0",
     "express": "^4.18.1",
     "fuse.js": "^6.6.0",
     "fuzzysort": "^1.2.1",

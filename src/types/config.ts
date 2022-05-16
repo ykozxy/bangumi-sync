@@ -1,5 +1,6 @@
 export interface Config {
     manual_confirm: boolean;
+    server_mode_interval: number;  // in seconds
     cache_path: string;
     log_path: string;
     log_file_level: "debug" | "info" | "warn" | "error";

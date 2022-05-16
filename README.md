@@ -9,18 +9,47 @@
 ```bash
 git clone https://github.com/ykozxy/bangumi-sync
 cd bangumi-sync
-npm install
+npm i
 ```
 
 ## 运行
 
-在终端中执行以下命令运行脚本：
+首次运行时会先从提供的数据源下载动画数据库，由于数据库文件较大，可能需要一段时间。然后，脚本会自动在浏览器中打开 Bangumi 和 Anilist 的授权界面，按提示操作即可。
+
+脚本有两种运行模式，用于手动运行的单次执行模式，和后台常驻并自动定时同步的 server 模式。
+
+### 单次执行模式
+
+Single 模式中脚本仅会执行单次同步并结束。配置文件内中的 `manual_confirm` 项可用于设置是否在同步更新前手动确认。在终端中执行以下命令来以单次执行模式运行脚本：
 
 ```bash
 npm start
 ```
 
-首次运行时会先从提供的数据源下载动画数据库，由于数据库文件较大，可能需要一段时间。然后，脚本会自动在浏览器中打开 Bangumi 和 Anilist 的授权界面，按提示操作即可。
+### Server 模式
+
+Server 模式依赖于进程管理工具 [pm2](https://pm2.keymetrics.io/)，需先行使用命令 `npm i -g pm2` 安装。
+
+在这个模式下，`manual_confirm` 变量会被自动忽略，脚本会以配置文件中的 `server_mode_interval` 项设置的时间间隔（秒）为周期同步，所有的输出会写入以脚本启动时间命名的 log 文件。
+
+在终端中执行以下命令来以 server 模式运行脚本：
+
+```bash
+npm run server:start
+```
+
+想要停止脚本，运行：
+
+```bash
+npm run server:stop
+```
+
+如果想查看脚本的运行状态，可以使用任一下列命令：
+
+```bash
+pm2 ls
+pm2 describe bangumi-sync
+```
 
 ## 配置
 
@@ -28,7 +57,8 @@ npm start
 
 | 变量                          | 描述                                             | 可选参数                               |
 |-----------------------------|------------------------------------------------|------------------------------------|
-| `manual_confirm`            | 是否在上传更新前手动确认，`server`模式中自动关闭                   | `true` / `false`                   |
+| `manual_confirm`            | 是否在上传更新前手动确认，`server` 模式中自动关闭                  | `true` / `false`                   |
+| `server_mode_interval`      | 控制 `server` 模式中两次同步的时间间隔（秒）                    | `number`                           |
 | `cache_path`                | 缓存路径                                           | 相对路径                               |
 | `log_path`                  | 日志文件路径                                         | 相对路径                               |
 | `log_file_level`            | 日志文件最低输出级别                                     | `debug` / `info`/ `warn` / `error` |
@@ -38,16 +68,15 @@ npm start
 
 ## 手动条目匹配
 
-因为本项目未能做到 100% 的自动匹配，所以可以通过编辑 `manual_relations.config.json` 来手动添加条目匹配或编辑 `ignore_entries.config.json` 来忽略某些条目。
+因为本项目未能做到 100% 的自动匹配，所以可以通过编辑 `manual_relations.json` 来手动添加条目匹配或编辑 `ignore_entries.json` 来忽略某些条目。
 
-`manual_relation.js` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
+`manual_relation.json` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
 
-`ignore_entries.js` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会忽略它们。
+`ignore_entries.json` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会忽略它们。
 
 ## 条目匹配原理
 
-由于我能找到的所有国内动画数据库均与外网基于 MAL/anidb
-的数据库条目信息有出入，所以简单进行条目名称匹配受到限制。因此，本项目的匹配方式采用了将每一个条目进行名称模糊匹配+信息精确匹配的方式。由于每一次匹配需要进行大量模糊查询，这种方式一定程度上牺牲了匹配的效率来换取较高的精度。
+由于我能找到的所有国内动画数据库均与外网基于 MAL/anidb 的数据库条目信息有出入，所以简单进行条目名称匹配受到限制。因此，本项目的匹配方式采用了将每一个条目进行名称模糊匹配+信息精确匹配的方式。由于每一次匹配需要进行大量模糊查询，这种方式一定程度上牺牲了效率来换取较高的精度。
 
 经测试，本人 bangumi 收藏中的 250+ 个动画条目仅有 22 个匹配失败。去除欧美动画以及 bangumi 本身信息缺失的条目，仅有 9 个因为数据库信息不匹配而导致失败。总成功率约为 95%。
 
@@ -62,7 +91,8 @@ npm start
 
 ## TODO
 
-- [ ] Server 模式。
+- [x] Server 模式。
+- [ ] Server 模式中的通知推送。
 - [ ] 从 Anilist 到 bangumi 的双向同步。
 - [ ] UI 界面。
 

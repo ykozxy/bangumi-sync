@@ -4,12 +4,13 @@ import {RateLimiter} from "limiter";
 import {Config} from "../types/config";
 import {createServer, IncomingMessage, ServerResponse} from 'http';
 import fs from "fs";
-import {memoize} from "decko";
 import open from "open";
+import {autoLog, autoLogException, LogLevel} from "./log_util";
 
 const config: Config = require("../../config.json");
 
 class BangumiClient {
+    public static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();
     private readonly limiter: RateLimiter;
     private readonly api_url: string = "https://api.bgm.tv";
     private readonly token = {
@@ -20,6 +21,21 @@ class BangumiClient {
         user_id: 0,
     };
     private username: string = "";
+
+    static {
+        // Clear cache every hour
+        const clearCache = () => {
+            const now = new Date();
+            BangumiClient.subjectCache.forEach((value, key) => {
+                if (value.expire < now) {
+                    BangumiClient.subjectCache.delete(key);
+                }
+            });
+            setTimeout(clearCache, 1000 * 60 * 60);
+        };
+
+        clearCache();
+    }
 
     constructor() {
         this.limiter = new RateLimiter({tokensPerInterval: 2, interval: 1000});
@@ -56,7 +72,7 @@ class BangumiClient {
 
         // Refresh the token
         if (!await this.refreshToken()) {
-            console.error("[Bangumi] Failed to refresh bangumi token.");
+            autoLog("Failed to refresh bangumi token.", "Bangumi", LogLevel.Error);
             await this.getToken();
         }
 
@@ -89,23 +105,31 @@ class BangumiClient {
                 const data: BangumiComponents["schemas"]["User1"] = response.data;
                 this.username = data.username;
             } catch (e) {
-                console.error("[Bangumi] Cannot get user info.")
-                console.error(e);
+                autoLog("Failed to get user info.", "Bangumi", LogLevel.Error);
+                autoLogException(e as Error);
                 process.exit(1);
             }
         }
     }
 
-    @memoize
     public async getSubjectById(bgm_id: string, retry: boolean = true): Promise<BangumiComponents["schemas"]["Subject"] | null> {
+        // Check cache
+        let cache = BangumiClient.subjectCache.get(bgm_id);
+        if (cache) {
+            return cache.data;
+        }
+
         await this.limiter.removeTokens(1);
         const url = this.api_url + `/v0/subjects/${bgm_id}`;
         try {
             const response = await axios.get(url, {headers: this.headers});
-            return response.data as BangumiComponents["schemas"]["Subject"];
+            let res = response.data as BangumiComponents["schemas"]["Subject"];
+            const cache_data = {data: res, expire: new Date(Date.now() + 24 * 60 * 60 * 1000)};
+            BangumiClient.subjectCache.set(bgm_id, cache_data);
+            return res;
         } catch (e: any) {
-            console.error(`[Bangumi] Network error when fetching subject ${bgm_id}`);
-            console.error(e.response);
+            autoLog(`Network error when fetching subject ${bgm_id}`, "Bangumi", LogLevel.Error);
+            autoLogException(e as Error);
 
             if (retry) {
                 await setTimeout(() => {
@@ -136,8 +160,8 @@ class BangumiClient {
                 const response = await axios.get(url, {params: query, headers: this.headers});
                 data = response.data as BangumiComponents["schemas"]["Paged_UserCollection_"];
             } catch (e: any) {
-                console.error(`[Bangumi] Error when fetching anime collection.`);
-                console.error(e.response);
+                autoLog(`Network error when fetching anime collection.`, "Bangumi", LogLevel.Error);
+                autoLogException(e as Error);
                 return null;
             }
 
@@ -172,7 +196,7 @@ class BangumiClient {
 
         // Prompt user to token generation web page
         const auth_url = `https://bgm.tv/oauth/authorize?client_id=bgm2304627c3f99e9682&response_type=code&redirect_uri=http://localhost:3498`;
-        // console.log(`[Bangumi] Open the url to authorize with bgm.tv: ${auth_url}`);
+        autoLog(`If auto open browser failed, please visit this link manually to authorize with bgm.tv: ${auth_url}`, "Bangumi");
         await open(auth_url);
 
         await new Promise((resolve) => {
@@ -203,8 +227,8 @@ class BangumiClient {
             this.token.token_type = token.token_type;
             this.token.user_id = token.user_id;
         } catch (e: any) {
-            console.error("[Bangumi] Failed to get bangumi token.");
-            console.error(e.response);
+            autoLog(`Failed to get bangumi token.`, "Bangumi", LogLevel.Error);
+            autoLogException(e as Error);
             process.exit(1);
         }
     }
@@ -232,8 +256,8 @@ class BangumiClient {
             this.token.user_id = token.user_id;
             return true;
         } catch (e) {
-            console.error("[Bangumi] Failed to refresh bangumi token.");
-            console.error(e);
+            autoLog(`Failed to refresh bangumi token.`, "Bangumi", LogLevel.Error);
+            autoLogException(e as Error);
             return false;
         }
     }

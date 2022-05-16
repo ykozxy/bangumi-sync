@@ -487,7 +487,7 @@ class AnilistClient {
         server.listen(3499);
 
         const auth_url = `https://anilist.co/api/v2/oauth/authorize?client_id=7280&redirect_uri=http://localhost:3499&response_type=code`
-        // console.log(`[Anilist] Open the url to authorize with anilist: ${auth_url}`);
+        autoLog(`If auto open browser failed, please visit this link manually to authorize with anilist: ${auth_url}`, "Anilist");
         await open(auth_url);
 
         await new Promise((resolve) => {

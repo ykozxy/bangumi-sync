@@ -92,9 +92,11 @@ export function autoLog(message: string, tag: string = "", level: LogLevel = Log
 
     // Log to file
     if (logFile && level >= logFileLevel) {
-        let date = new Date().toISOString().replace(/T/, " ").replace(/\..+/, "");
+        // Get local date and time string
+        const date = new Date();
+        const date_str = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${date.getHours()}:${date.getMinutes()}:${date.getSeconds().toString().padStart(2, "0")}`;
 
-        fs.appendFileSync(logFile, `${date} ${tag_str}${level_str}: ${message}\n`);
+        fs.appendFileSync(logFile, `${date_str} ${tag_str}${level_str}: ${message}\n`);
     }
 }
 
@@ -102,10 +104,11 @@ export function autoLogException(e: Error, invoker: string = "") {
     autoLog(`${e.message}\n${e.stack}`, invoker, LogLevel.Error, false);
 }
 
-
 // Setup log file and level
 if (!fs.existsSync(config.log_path)) fs.mkdirSync(config.log_path);
-logFile = `${config.log_path}/${new Date().toISOString().replace(/:/g, "-")}.log`;
+const date = new Date();
+const date_str = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${date.getHours()}-${date.getMinutes()}-${date.getSeconds().toString().padStart(2, "0")}`;
+logFile = `${config.log_path}/${date_str}.log`;
 
 switch (config.log_file_level) {
     case "debug":
