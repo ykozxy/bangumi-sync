@@ -94,9 +94,14 @@ export function autoLog(message: string, tag: string = "", level: LogLevel = Log
     if (logFile && level >= logFileLevel) {
         // Get local date and time string
         const date = new Date();
-        const date_str = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${date.getHours()}:${date.getMinutes()}:${date.getSeconds().toString().padStart(2, "0")}`;
+        const date_str = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate()} ${date.getHours()}:${date.getMinutes()}:${date.getSeconds().toString().padStart(2, "0")}`;
 
         fs.appendFileSync(logFile, `${date_str} ${tag_str}${level_str}: ${message}\n`);
+
+        // If the log file contains 1000+ lines, delete the first line.
+        if (fs.readFileSync(logFile).toString().split("\n").length > 1000) {
+            fs.writeFileSync(logFile, fs.readFileSync(logFile).toString().split("\n").slice(1).join("\n"));
+        }
     }
 }
 
@@ -107,7 +112,7 @@ export function autoLogException(e: Error, invoker: string = "") {
 // Setup log file and level
 if (!fs.existsSync(config.log_path)) fs.mkdirSync(config.log_path);
 const date = new Date();
-const date_str = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${date.getHours()}-${date.getMinutes()}-${date.getSeconds().toString().padStart(2, "0")}`;
+const date_str = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate()} ${date.getHours()}-${date.getMinutes()}-${date.getSeconds().toString().padStart(2, "0")}`;
 logFile = `${config.log_path}/${date_str}.log`;
 
 switch (config.log_file_level) {

@@ -19,26 +19,26 @@ function sleep(ms: number) {
 }
 
 async function singleMode(userConfirm: boolean) {
-    autoLog("Initializing...")
+    autoLog("Initializing...", "Main")
     await buildDatabase();
     await bangumiClient.checkToken();
     await anilistClient.checkToken();
-    autoLog("Finished.")
+    autoLog("Finished.", "Main")
     await sleep(200);
 
-    autoLog("Fetching Bangumi collections...")
+    autoLog("Fetching Bangumi collections...", "Main")
     let bangumiCollection = await getBangumiCollections();
-    autoLog("Fetching Anilist collections...")
+    autoLog("Fetching Anilist collections...", "Main")
     let anilistCollection = await getAnilistCollections();
     autoLog("Finished.")
     await sleep(200);
 
-    autoLog("Matching collections...");
+    autoLog("Matching collections...", "Main");
     bangumiCollection = await fillBangumiCollection(bangumiCollection);
-    autoLog("Finished.\n");
+    autoLog("Finished.", "Main");
     await sleep(200);
 
-    autoLog("Generating changelog...");
+    autoLog("Generating changelog...", "Main");
     let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
     for (let change of changeLog) {
         let name = "";
@@ -50,10 +50,10 @@ async function singleMode(userConfirm: boolean) {
             })
         }
         if (!name) name = <string>change.after.bgm_id;
-        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`);
-        autoLog(renderDiff(change.before, change.after));
+        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
+        autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
     }
-    autoLog(`${changeLog.length} changes.`);
+    autoLog(`${changeLog.length} changes.`, "Main");
 
     if (changeLog.length === 0) {
         return;
@@ -72,12 +72,12 @@ async function singleMode(userConfirm: boolean) {
         });
         if (confirm) {
             let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
-            autoLog(`${successCount} changes successfully applied.`);
+            autoLog(`${successCount} changes successfully applied.`, "Main");
         }
     } else {
         await sleep(200);
         let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
-        autoLog(`${successCount} changes successfully applied.`);
+        autoLog(`${successCount} changes successfully applied.`, "Main");
     }
 }
 
@@ -112,6 +112,20 @@ async function serverMode() {
 
         autoLog("Generating changelog...", "Main");
         let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
+
+        for (let change of changeLog) {
+            let name = "";
+            if (change.after.bgm_id) {
+                await getChinaAnimeItem(change.after.bgm_id).then(item => {
+                    if (item) {
+                        name = item.title;
+                    }
+                })
+            }
+            if (!name) name = <string>change.after.bgm_id;
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
+            autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
+        }
 
         autoLog("Updating Anilist collections...", "Main");
         let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
@@ -155,7 +169,7 @@ if (process.argv[2] === "--server") {
         }
 
         // Start script
-        autoLog("Running in single mode.");
+        autoLog("Running in single mode.", "Main");
         singleMode(config.manual_confirm).then(() => {
             process.exit(0);
         }).catch(e => {

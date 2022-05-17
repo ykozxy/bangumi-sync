@@ -300,18 +300,18 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
 }
 
 
-export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection): string {
-    let result = '';
+export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, join_str="\n"): string {
+    let results: string[] = [];
 
     if (!before || before.score != after.score) {
-        result += `Score: ${before ? before.score : 'NA'} -> ${after.score}\n`;
+        results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
     }
     if (!before || before.status != after.status) {
-        result += `Status: ${before ? before.status : 'NA'} -> ${after.status}\n`;
+        results.push(`Status: ${before ? before.status : 'NA'} -> ${after.status}`);
     }
     if (!before || before.watched_episodes != after.watched_episodes) {
-        result += `Watched episodes: ${before ? before.watched_episodes : 'NA'} -> ${after.watched_episodes}\n`;
+        results.push(`Watched episodes: ${before ? before.watched_episodes : 'NA'} -> ${after.watched_episodes}`);
     }
 
-    return result;
+    return results.join(join_str);
 }
