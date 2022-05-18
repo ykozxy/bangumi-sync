@@ -30,7 +30,7 @@ async function singleMode(userConfirm: boolean) {
     let bangumiCollection = await getBangumiCollections();
     autoLog("Fetching Anilist collections...", "Main")
     let anilistCollection = await getAnilistCollections();
-    autoLog("Finished.")
+    autoLog("Finished.", "Main")
     await sleep(200);
 
     autoLog("Matching collections...", "Main");

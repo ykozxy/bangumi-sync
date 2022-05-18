@@ -8,7 +8,14 @@ import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {getAnilistId, getGlobalAnimeItemByMal} from "./data_util";
 import {GlobalAnimeType, Season} from "../types/global_anime_data";
 import open from "open";
-import {autoLog, autoLogException, createProgressBar, incrementProgressBar, LogLevel} from "./log_util";
+import {
+    autoLog,
+    autoLogException,
+    createProgressBar,
+    incrementProgressBar,
+    LogLevel,
+    stopProgressBar
+} from "./log_util";
 
 const config: Config = require("../../config.json");
 
@@ -154,7 +161,6 @@ class AnilistClient {
         }[] = [];
 
         createProgressBar(collection.length);
-
         let successCount = 0;
 
         // Group collections with same status, score, progress, and comments together.
@@ -177,19 +183,41 @@ class AnilistClient {
             const notes = syncComment ? collections[0].comments : undefined;
             const status = AnilistClient.convertStatus(collections[0].status);
 
+            const findAnilistId = async (c: AnimeCollection) => {
+                if (!c.mal_id) throw new Error("Anilist and Bangumi ID both missing.");
+                let id: string | null = await getAnilistId(c.mal_id);
+                if (!id) {
+                    let id2 = await this.getId(Number(c.mal_id));
+                    if (!id2) {
+                        autoLog(`Could not find anilist ID for ${c.title} (mal=${c.mal_id}).`, "Anilist.smartUpdateCollection", LogLevel.Warn);
+                        return null;
+                    }
+                    id = String(id2);
+                }
+                return id;
+            };
+
+            // Use single query if there's only one collection
+            if (collections.length == 1) {
+                const c = collections[0];
+                const id = await findAnilistId(c);
+                if (id) {
+                    c.anilist_id = id;
+                    await this.saveEntry(c, syncComment);
+                    successCount++;
+                }
+                incrementProgressBar();
+                continue;
+            }
+
+            // Use multi query
             let ids: number[] = [];
             for (let c of collections) {
                 if (!c.anilist_id) {
-                    if (!c.mal_id) throw new Error("Anilist and Bangumi ID both missing.");
-                    let id: string | null = await getAnilistId(c.mal_id);
+                    const id = await findAnilistId(c);
                     if (!id) {
-                        let id2 = await this.getId(Number(c.mal_id));
-                        if (!id2) {
-                            autoLog(`Could not find anilist ID for ${c.title} (mal=${c.mal_id}).`, "Anilist.smartUpdateCollection", LogLevel.Warn);
-                            incrementProgressBar();
-                            continue;
-                        }
-                        id = String(id2);
+                        incrementProgressBar();
+                        continue;
                     }
                     c.anilist_id = id;
                 }
@@ -220,6 +248,7 @@ class AnilistClient {
             successCount += variable.ids.length;
         }
 
+        stopProgressBar();
         return successCount;
     }
 

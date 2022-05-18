@@ -35,7 +35,6 @@
     "fuse.js": "^6.6.0",
     "fuzzysort": "^1.2.1",
     "limiter": "^2.1.0",
-    "node-schedule": "^2.1.0",
     "open": "^8.4.0",
     "string-similarity": "^4.0.4"
   }
