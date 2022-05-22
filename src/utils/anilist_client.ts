@@ -72,6 +72,9 @@ class AnilistClient {
         }
     }
 
+    /**
+     * Get anime collection of the current user.
+     */
     public async getAnimeCollection(): Promise<MediaList[] | null> {
         const query = `
         query($id: Int, $page: Int) {
@@ -131,6 +134,11 @@ class AnilistClient {
         return result;
     }
 
+    /**
+     * Smart update the anime collection based on the given list.
+     * @param collection The list of anime to update.
+     * @param syncComment Whether to sync the comment.
+     */
     public async smartUpdateCollection(collection: AnimeCollection[], syncComment: boolean = false): Promise<number> {
         const query = `
         mutation($ids: [Int], $status: MediaListStatus, $scoreRaw: Int, $progress: Int, $notes: String, $completedAt: FuzzyDateInput) {
@@ -252,6 +260,11 @@ class AnilistClient {
         return successCount;
     }
 
+    /**
+     * Save a new entry to collection
+     * @param collection New collection entry
+     * @param syncComment Whether to sync comments
+     */
     public async saveEntry(collection: AnimeCollection, syncComment: boolean = false): Promise<boolean> {
         if (!collection.anilist_id) {
             autoLog(`Failed to save ${collection.title} (mal=${collection.mal_id}), empty anilist ID.`, "Anilist.saveEntry", LogLevel.Error);
@@ -280,6 +293,10 @@ class AnilistClient {
         return false;
     }
 
+    /**
+     * Get anilist id from mal id
+     * @param mal_id Mal id
+     */
     public async getId(mal_id: number): Promise<number | null> {
         const query = `
         query($id: Int) {
@@ -373,6 +390,10 @@ class AnilistClient {
         return null;
     }
 
+    /**
+     * Search for an anime by name.
+     * @param title The title of the anime.
+     */
     public async searchAnime(title: string): Promise<Media[] | null> {
         const query = `
         query($title: String) {
@@ -407,6 +428,12 @@ class AnilistClient {
         return result
     }
 
+    /**
+     * Query the API.
+     * @param query The query to send.
+     * @param variables The variables to send.
+     * @param retry Whether to retry if the request fails.
+     */
     public async query(query: string, variables: any = {}, retry: boolean = true): Promise<any> {
         await this.perTokenLimiter.removeTokens(1);
         await this.mainLimiter.removeTokens(1);
@@ -416,6 +443,8 @@ class AnilistClient {
                 query,
                 variables
             }), {headers: this.headers});
+
+            // Handle rate limit
             let requestRemain = Number(response.headers['x-ratelimit-remaining']);
             let limiterRemain = this.mainLimiter.getTokensRemaining();
             if (requestRemain < limiterRemain) {
@@ -434,6 +463,9 @@ class AnilistClient {
         }
     }
 
+    /**
+     * Automatically load and check user token. If token is expired, prompt user to login.
+     */
     public async checkToken() {
         function tokenExists(this: AnilistClient) {
             return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type

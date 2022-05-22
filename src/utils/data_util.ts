@@ -20,7 +20,7 @@ import {Config, IgnoreEntries, ManualRelations} from "../types/config";
 import {EtagType, Relation} from "../types/cache";
 import {getEtagCache, setEtagCache} from "./cache_util";
 import {bangumiClient} from "./bangumi_client";
-import {autoLogException, autoLog, incrementProgressBar, LogLevel} from "./log_util";
+import {autoLog, autoLogException, LogLevel} from "./log_util";
 
 const config: Config = require("../../config.json");
 
@@ -81,19 +81,20 @@ export async function buildDatabase(): Promise<void> {
 /**
  * @description Get china anime object by bgm.tv id.
  * @param bgm_id bgm.tv id of the anime.
+ * @param check_fields Whether to ensure all fields are present when fetching from bgm.tv.
  * @returns The anime data, or null if not found.
  */
-export async function getChinaAnimeItem(bgm_id: string): Promise<ChinaAnimeItem | null> {
+export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = true): Promise<ChinaAnimeItem | null> {
     const cn_anime = bgm_id_map.get(bgm_id);
     if (cn_anime) return cn_anime;
 
-    // console.log(`[${getChinaAnimeItem.name}] Bgm id ${bgm_id} not found in database, fetching and building from bgm.tv...`);
+    autoLog(`Bgm id ${bgm_id} not found in database, fetching and building from bgm.tv...`, "getChinaAnimeItem", LogLevel.Debug);
 
     const bgm_subject = await bangumiClient.getSubjectById(bgm_id);
     if (!bgm_subject) return null;
 
     // Ensure bgm_subject has all required fields
-    if (!bgm_subject.date) return null;
+    if (check_fields && !bgm_subject.date) return null;
     let type: ChinaAnimeType;
     switch (bgm_subject.platform) {
         case "TV":
@@ -113,7 +114,8 @@ export async function getChinaAnimeItem(bgm_id: string): Promise<ChinaAnimeItem 
     }
 
     return {
-        begin: new Date(bgm_subject.date),
+        // Set date to now if date is null
+        begin: bgm_subject.date ? new Date(bgm_subject.date) : new Date(),
         end: "",
         lang: Lang.Ja,
         officialSite: "",
@@ -156,22 +158,20 @@ export async function getGlobalAnimeItemByAnilist(anilist_id: string): Promise<G
  * @description Try to match a China anime object to global object.
  * @param cn China anime object.
  * @param titleSimilarityThreshold Lower bound of title similarity when fuzzy matching.
- * @param matchMonth Default is true. If true, only match anime that aired in the same month.
- * @param matchFormat Default is true. If true, only match anime that has the same format (be cautious, the format in cn and global database may be different).
  * @returns The matched global anime object, or null if not found.
  */
-export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThreshold: number = 0.75, matchMonth: boolean = true, matchFormat: boolean = true): Promise<GlobalAnimeItem | null> {
+export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThreshold: number = 0.75): Promise<GlobalAnimeItem | null> {
     // First, check known relations
     const bgm_id = getBgmId(cn);
     if (!bgm_id) {
         autoLog(`Failed to find BGM id for "${cn.title}.`, "matchEntry", LogLevel.Warn);
-        incrementProgressBar();
+        // incrementProgressBar();
         return null;
     }
     let mal_id = known_relations.find(r => r.bgm_id === bgm_id)?.mal_id;
     if (mal_id) {
         autoLog(`Found known relation for "${cn.title}".`, "matchEntry", LogLevel.Debug);
-        incrementProgressBar();
+        // incrementProgressBar();
         return await getGlobalAnimeItemByMal(mal_id);
     }
 
@@ -222,17 +222,17 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
         fs.writeFileSync(config.cache_path + '/known_relations.json', JSON.stringify(known_relations, null, 4));
 
         autoLog(`score=${score}, "${cn.title}" matched to "${anime.title}"`, "matchEntry", LogLevel.Info);
-        incrementProgressBar();
+        // incrementProgressBar();
         return anime;
     }
 
-    incrementProgressBar();
+    // incrementProgressBar();
     return null;
 }
 
 
 /**
- * Check if the China and global anime are matched.
+ * @description Check if the China and global anime are matched.
  * @param china     The china anime item.
  * @param global    The global anime item.
  * @param strictMode    When true, more strict check is performed.
@@ -316,6 +316,7 @@ export async function compareChinaWithGlobal(china: ChinaAnimeItem, global: Glob
  * @param cn An cn anime object.
  */
 export function getBgmId(cn: ChinaAnimeItem): string | null {
+    // TODO: construct map from cnItem to bgm_id for anime not in database
     return cn.sites.find(s => s.site === SiteEnum.Bangumi)?.id || null;
 }
 
@@ -330,6 +331,10 @@ export function getMalId(gl: GlobalAnimeItem): string | null {
 }
 
 
+/**
+ * @description Get china anime object from a global anime object.
+ * @param malId
+ */
 export function getAnilistId(malId: string): string | null {
     let gls = mal_id_map.get(malId);
     if (!gls) return null;

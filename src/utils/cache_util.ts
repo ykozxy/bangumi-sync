@@ -20,7 +20,11 @@ if (!fs.existsSync(config.cache_path + '/cache.json')) {
 
 const cache: Cache = JSON.parse(fs.readFileSync(config.cache_path + '/cache.json').toString());
 
-
+/**
+ * Get etag from cache
+ * @param etag_type Etag type
+ * @param subject_id Subject id, only used for bgm subject cache
+ */
 export function getEtagCache(etag_type: EtagType, subject_id?: string): string | null {
     switch (etag_type) {
         case EtagType.China:
@@ -33,6 +37,12 @@ export function getEtagCache(etag_type: EtagType, subject_id?: string): string |
     }
 }
 
+/**
+ * Set etag to cache
+ * @param etag_type Etag type
+ * @param etag Etag
+ * @param subject_id Subject id, only used for bgm subject cache
+ */
 export function setEtagCache(etag_type: EtagType, etag: string, subject_id?: string): void {
     switch (etag_type) {
         case EtagType.China:

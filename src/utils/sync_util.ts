@@ -7,26 +7,31 @@ import {GlobalAnimeItem} from "../types/global_anime_data";
 import {
     compareChinaWithGlobal,
     getAnilistId,
+    getBgmId,
     getChinaAnimeItem,
     getGlobalAnimeItemByAnilist,
     getGlobalAnimeItemByMal,
     getMalId,
     ignore_entries,
     manual_relations,
-    matchChinaToGlobal
+    matchChinaToGlobal,
+    matchGlobalToChina
 } from "./data_util";
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
+import {ChinaAnimeItem} from "../types/china_anime_data";
 
 
 /**
- * Fetch user's Anilist collections
+ * @description Fetch user's Anilist collections
  */
 export async function getAnilistCollections(): Promise<AnimeCollection[]> {
+    // Get raw collections
     let collection = await anilistClient.getAnimeCollection();
     let res: AnimeCollection[] = [];
     if (!collection) return res;
 
+    // Convert format
     for (let mediaList of collection) {
         let status: CollectionStatus;
         switch (mediaList.status) {
@@ -77,13 +82,15 @@ export async function getAnilistCollections(): Promise<AnimeCollection[]> {
 }
 
 /**
- * Fetch user's Bangumi collections
+ * @description Fetch user's Bangumi collections
  */
 export async function getBangumiCollections(): Promise<AnimeCollection[]> {
+    // Get raw collections
     let collection = await bangumiClient.getAnimeCollection();
     let res: AnimeCollection[] = [];
     if (!collection) return res;
 
+    // Convert format
     for (let entry of collection) {
         let status: CollectionStatus;
         switch (entry.type) {
@@ -122,7 +129,7 @@ export async function getBangumiCollections(): Promise<AnimeCollection[]> {
 }
 
 /**
- * Match and fill mal_id from global anime objects for bangumi collections.
+ * @description Match and fill mal_id from global anime objects for bangumi collections.
  * @param bangumiCollection The Bangumi collection to be matched.
  */
 export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]): Promise<AnimeCollection[]> {
@@ -134,6 +141,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
     let result: Array<{ bgm: AnimeCollection, global?: GlobalAnimeItem }> = new Array(bangumiCollection.length);
     for (let i = 0; i < bangumiCollection.length; i++) {
         let bangumiItem = bangumiCollection[i];
+        // Push job to scheduler
         scheduler.push(async () => {
             if (!bangumiItem.bgm_id) {
                 incrementProgressBar();
@@ -170,7 +178,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Get China anime object
             const chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
             if (!chinaItem) {
-                incrementProgressBar()
+                // incrementProgressBar();
                 autoLog(`Cannot construct cn_anime object for bgm=${bangumiItem.bgm_id}.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
                     bgm: bangumiItem,
@@ -181,6 +189,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Match China anime object to global
             const globalItem = await matchChinaToGlobal(chinaItem);
             if (globalItem) {
+                // incrementProgressBar();
                 result[i] = {
                     bgm: bangumiItem,
                     global: globalItem,
@@ -206,6 +215,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
 
                     // Check two object, enable strict mode when similarity is below 0.75
                     if (await compareChinaWithGlobal(chinaItem, newGlobalItem, maxSimilarity < 0.75)) {
+                        // incrementProgressBar();
                         result[i] = {
                             bgm: bangumiItem,
                             global: newGlobalItem,
@@ -215,6 +225,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
                 }
             }
 
+            incrementProgressBar();
             autoLog(`Cannot match ${chinaItem.title} (${bangumiItem.bgm_id}) to an global anime object.`, "matchEntry", LogLevel.Warn);
             result[i] = {
                 bgm: bangumiItem,
@@ -299,8 +310,13 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
     return result;
 }
 
-
-export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, join_str="\n"): string {
+/**
+ * @description Pretty format changelog
+ * @param before Collection before changes
+ * @param after Collection after changes
+ * @param join_str The string to separate each field
+ */
+export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, join_str = "\n"): string {
     let results: string[] = [];
 
     if (!before || before.score != after.score) {

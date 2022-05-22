@@ -10,7 +10,7 @@ import {autoLog, autoLogException, LogLevel} from "./log_util";
 const config: Config = require("../../config.json");
 
 class BangumiClient {
-    public static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();
+    private static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();
     private readonly limiter: RateLimiter;
     private readonly api_url: string = "https://api.bgm.tv";
     private readonly token = {
@@ -48,6 +48,9 @@ class BangumiClient {
         }
     }
 
+    /**
+     * Automatically load and check user token. If token is expired, prompt user to login.
+     */
     public async checkToken() {
         function tokenExists(this: BangumiClient) {
             return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type && this.token.user_id
@@ -112,6 +115,11 @@ class BangumiClient {
         }
     }
 
+    /**
+     * Get subject by id.
+     * @param bgm_id Subject id.
+     * @param retry Whether to retry if failed.
+     */
     public async getSubjectById(bgm_id: string, retry: boolean = true): Promise<BangumiComponents["schemas"]["Subject"] | null> {
         // Check cache
         let cache = BangumiClient.subjectCache.get(bgm_id);
@@ -140,6 +148,30 @@ class BangumiClient {
         }
     }
 
+    /**
+     * Search anime by title
+     * @param title Title to search.
+     */
+    public async searchAnime(title: string): Promise<BangumiComponents["schemas"]["SubjectSmall"][]> {
+        await this.limiter.removeTokens(1);
+        const url = this.api_url + `/search/subject/${encodeURIComponent(title)}`;
+        let query: BangumiOperations["searchSubjectByKeywords"]["parameters"]["query"] = {
+            type: 2,
+        };
+
+        try {
+            const response = await axios.get(url, {params: query, headers: this.headers});
+            return response.data.list as BangumiComponents["schemas"]["SubjectSmall"][];
+        } catch (e) {
+            autoLog(`Network error when searching anime ${title}`, "Bangumi", LogLevel.Error);
+            autoLogException(e as Error);
+            return [];
+        }
+    }
+
+    /**
+     * Get anime collection of the logged-in user.
+     */
     public async getAnimeCollection(): Promise<BangumiComponents["schemas"]["UserCollection"][] | null> {
         await this.limiter.removeTokens(1);
         const url = this.api_url + `/v0/users/${this.username}/collections`;
@@ -168,9 +200,7 @@ class BangumiClient {
             numFetched += 50;
             total = data.total as number;
             collections = collections.concat(data.data as BangumiComponents["schemas"]["UserCollection"][]);
-            // process.stdout.write(".");
         }
-        // console.log();
         return collections;
     }
 

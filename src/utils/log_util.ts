@@ -18,6 +18,10 @@ export enum LogLevel {
     Error = 3,
 }
 
+/**
+ * Create a new progress bar.
+ * @param total The total number of items to process.
+ */
 export function createProgressBar(total: number) {
     if (progressBar || multiBar) {
         autoLog("Trying to overwrite existing progress bar", "createProgressBar", LogLevel.Warn);
@@ -35,6 +39,10 @@ export function createProgressBar(total: number) {
     progressBar = multiBar.create(total, 0, {});
 }
 
+/**
+ * Update the progress bar.
+ * @param amount The amount to increment the progress bar by.
+ */
 export function incrementProgressBar(amount: number = 1) {
     if (progressBar && multiBar) {
         progressBar.increment(amount);
@@ -44,6 +52,9 @@ export function incrementProgressBar(amount: number = 1) {
     }
 }
 
+/**
+ * Stop the progress bar.
+ */
 export function stopProgressBar() {
     if (multiBar && progressBar) {
         progressBar.stop();
@@ -53,6 +64,13 @@ export function stopProgressBar() {
     }
 }
 
+/**
+ * Log a message to the console and log file.
+ * @param message The message to log.
+ * @param tag The tag to log the message under.
+ * @param level The level of the message.
+ * @param format Whether to format the message or not.
+ */
 export function autoLog(message: string, tag: string = "", level: LogLevel = LogLevel.Info, format: boolean = true) {
     const tag_str = tag ? `[${tag}] ` : "";
     let console_message: string;
@@ -105,8 +123,19 @@ export function autoLog(message: string, tag: string = "", level: LogLevel = Log
     }
 }
 
-export function autoLogException(e: Error, invoker: string = "") {
-    autoLog(`${e.message}\n${e.stack}`, invoker, LogLevel.Error, false);
+/**
+ * Log an error to the console and log file.
+ * @param e The error to log.
+ * @param tag The tag to log the error under.
+ */
+export function autoLogException(e: Error, tag: string = "") {
+    autoLog(e.message, tag, LogLevel.Error, false);
+    // Separate stack trace by line breaks, and print each line separately.
+    if (e.stack) {
+        e.stack.split("\n").forEach((line) => {
+            autoLog(line, tag, LogLevel.Error, false);
+        });
+    }
 }
 
 // Setup log file and level
