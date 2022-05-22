@@ -230,6 +230,82 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
     return null;
 }
 
+/**
+ * @description Try to match a Global anime object to cn object.
+ * @param gl Global anime object.
+ * @param titleSimilarityThreshold Lower bound of title similarity when fuzzy matching.
+ * @returns The matched global anime object, or null if not found.
+ */
+export async function matchGlobalToChina(gl: GlobalAnimeItem, titleSimilarityThreshold: number = 0.75): Promise<ChinaAnimeItem | null> {
+    // First, check known relations
+    const mal_id = getMalId(gl);
+    if (!mal_id) {
+        autoLog(`Failed to find MAL id for "${gl.title}.`, "matchEntry", LogLevel.Warn);
+        // incrementProgressBar();
+        return null;
+    }
+    let bgm_id = known_relations.find(r => r.mal_id === mal_id)?.bgm_id;
+    if (bgm_id) {
+        autoLog(`Found known relation for "${gl.title}".`, "matchEntry", LogLevel.Debug);
+        // incrementProgressBar();
+        return await getChinaAnimeItem(bgm_id);
+    }
+
+    // Construct all titles in global database
+    const glTitles = [gl.title, ...gl.synonyms];
+
+    // Fuzzy match titles in cn database
+    const fuzzyMatch: { cn_anime: ChinaAnimeItem, score: number }[] = [];
+    let bestMatch: { anime?: ChinaAnimeItem, score: number } = {score: 0};
+    china_anime_data.items.forEach(cn => {
+        const cnTitles = [cn.title];
+        for (const [, names] of Object.entries(cn.titleTranslate)) if (names) cnTitles.push(...names);
+        for (const title of cnTitles) {
+            const score = stringSimilarity.findBestMatch(title, glTitles).bestMatch.rating;
+            if (score >= titleSimilarityThreshold)
+                fuzzyMatch.push({cn_anime: cn, score});
+            if (score > bestMatch.score)
+                bestMatch = {anime: cn, score};
+        }
+    });
+    fuzzyMatch.sort((a, b) => b.score - a.score);
+
+    // If all fuzzy match results have score below threshold, use the best match
+    // In this case, strict mode is enabled to (hopefully) avoid false positive
+    let strictMode = false;
+    if (fuzzyMatch.length == 0 && bestMatch.anime) {
+        fuzzyMatch.push({cn_anime: bestMatch.anime, score: bestMatch.score});
+        strictMode = true;
+    }
+
+    // Check aired date and format
+    for (const {cn_anime, score} of fuzzyMatch) {
+        if (!await compareChinaWithGlobal(cn_anime, gl, strictMode)) continue;
+
+        // Store match to relations
+        const bgm_id = getBgmId(cn_anime);
+        if (!bgm_id) {
+            continue;
+        }
+
+        known_relations.push({
+            mal_id,
+            bgm_id,
+            title: gl.title,
+        });
+
+        // Save known relations
+        fs.writeFileSync(config.cache_path + '/known_relations.json', JSON.stringify(known_relations, null, 4));
+
+        autoLog(`score=${score}, "${gl.title}" matched to "${cn_anime.title}"`, "matchEntry", LogLevel.Info);
+        // incrementProgressBar();
+        return cn_anime;
+    }
+
+    // incrementProgressBar();
+    return null;
+}
+
 
 /**
  * @description Check if the China and global anime are matched.

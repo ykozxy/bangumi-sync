@@ -257,6 +257,138 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
 }
 
 
+/**
+ * @description Match and fill bgm_id from cn anime objects for Anilist collections.
+ * @param anilistCollection The Anilist collection to be matched.
+ */
+export async function fillAnilistCollection(anilistCollection: AnimeCollection[]): Promise<AnimeCollection[]> {
+    // Setup progress bar
+    createProgressBar(anilistCollection.length);
+
+    // Schedule fixed amount of async jobs at most to avoid blocking and delays in console.log
+    let scheduler = new Scheduler(15);
+    let result: Array<{ bgm?: ChinaAnimeItem, anilist: AnimeCollection }> = new Array(anilistCollection.length);
+    for (let i = 0; i < anilistCollection.length; i++) {
+        let anilistItem = anilistCollection[i];
+        // Push job to scheduler
+        scheduler.push(async () => {
+            incrementProgressBar();
+            if (!anilistItem.anilist_id) {
+                // incrementProgressBar();
+                autoLog(`${anilistItem} has no anilist_id.`, "matchEntry", LogLevel.Warn);
+                result[i] = {
+                    anilist: anilistItem,
+                };
+                return;
+            }
+
+            // Ignore if in ignore_entries
+            if (ignore_entries.anilist.find(r => String(r) === anilistItem.anilist_id)) {
+                // incrementProgressBar();
+                result[i] = {
+                    anilist: anilistItem,
+                };
+                return;
+            }
+
+            // If in manual relation, fetch the entry directly
+            let manual_id = manual_relations.find(r => String(r[1]) === anilistItem.anilist_id);
+            if (manual_id && manual_id[0]) {
+                let cn = await getChinaAnimeItem(String(manual_id[0]), false);
+                if (cn) {
+                    // incrementProgressBar();
+                    result[i] = {
+                        bgm: cn,
+                        anilist: anilistItem,
+                    };
+                    return;
+                }
+            }
+
+            // Get global anime object
+            const globalItem = await getGlobalAnimeItemByAnilist(anilistItem.anilist_id);
+            if (!globalItem) {
+                // incrementProgressBar();
+                autoLog(`Cannot construct global anime object for anilist=${anilistItem.anilist_id}.`, "matchEntry", LogLevel.Warn);
+                result[i] = {
+                    anilist: anilistItem,
+                };
+                return;
+            }
+
+            // Match global anime object to cn anime object
+            const cnItem = await matchGlobalToChina(globalItem);
+            if (cnItem) {
+                // incrementProgressBar();
+                result[i] = {
+                    bgm: cnItem,
+                    anilist: anilistItem,
+                };
+                return;
+            }
+
+            // If no match found in database, search directly on bgm.tv
+            // FIXME: recheck
+            if (anilistItem.title) {
+                let glTitles = [globalItem.title, ...globalItem.synonyms];
+                const bgmItems = await bangumiClient.searchAnime(anilistItem.title);
+                if (bgmItems) for (let bgmItem of bgmItems) {
+                    if (!bgmItem.id) continue;
+
+                    // Construct cn anime object
+                    const newCnItem = await getChinaAnimeItem(String(bgmItem.id));
+                    if (!newCnItem) continue;
+
+                    // Check name similarity
+                    let maxSimilarity = 0;
+                    const cnTitles = [newCnItem.title];
+                    for (const [, names] of Object.entries(newCnItem.titleTranslate)) if (names) cnTitles.push(...names);
+                    for (const glTitle of glTitles) {
+                        maxSimilarity = Math.max(maxSimilarity, stringSimilarity.findBestMatch(glTitle, cnTitles).bestMatch.rating);
+                    }
+
+                    // Check two object, enable strict mode when similarity is below 0.75
+                    if (await compareChinaWithGlobal(newCnItem, globalItem, maxSimilarity < 0.75)) {
+                        // incrementProgressBar();
+                        result[i] = {
+                            bgm: newCnItem,
+                            anilist: anilistItem,
+                        };
+                        return;
+                    }
+                }
+            }
+
+            // incrementProgressBar();
+            autoLog(`Cannot match ${globalItem.title} (anilist=${anilistItem.anilist_id}) to an bangumi item.`, "matchEntry", LogLevel.Warn);
+            result[i] = {
+                anilist: anilistItem,
+            };
+            return;
+        })
+    }
+    await scheduler.wait(); // Wait for all jobs to finish
+    stopProgressBar();
+
+    // Fill mal_id and anilist_id to each collection
+    let failedCount = 0;
+    for (let cnMatchedElement of result) {
+        if (!cnMatchedElement.bgm) {
+            failedCount++;
+        } else {
+            cnMatchedElement.anilist.bgm_id = getBgmId(cnMatchedElement.bgm) || undefined;
+        }
+    }
+    autoLog(`${failedCount}/${result.length} entries cannot be matched.`, "matchEntry", LogLevel.Info);
+
+    return result.map(element => element.anilist);
+}
+
+/**
+ * @description Compare anilist collections to bangumi and generate a list of changes (apply to anilist)
+ * @param bangumiCollection Bangumi collection
+ * @param anilistCollection Anilist collection
+ */
 export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[]): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
