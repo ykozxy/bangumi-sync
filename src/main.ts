@@ -144,6 +144,17 @@ async function serverMode() {
 }
 
 
+// async function debug() {
+//     await buildDatabase();
+//     await anilistClient.checkToken();
+//
+//     let anilistCollection = await getAnilistCollections();
+//     let matched = await fillAnilistCollection(anilistCollection);
+//     console.log(matched);
+// }
+//
+// debug().then(r => process.exit(0));
+
 if (process.argv[2] === "--server") {
     autoLog("Running in server mode.", "Main");
     serverMode().then(() => {
@@ -165,25 +176,22 @@ if (process.argv[2] === "--server") {
     // Check pm2 to see if another instance is running
     let exec = require('child_process').exec;
     exec('pm2 list', (err: Error, stdout: string) => {
-        if (err) {
-            autoLogException(err);
-            return;
-        }
-        let lines = stdout.split("\n");
-        let running = false;
-        for (let line of lines) {
-            if (line.indexOf("bangumi-sync") !== -1) {
-                if (line.indexOf("online") !== -1) {
-                    running = true;
+        if (!err) {
+            let lines = stdout.split("\n");
+            let running = false;
+            for (let line of lines) {
+                if (line.indexOf("bangumi-sync") !== -1) {
+                    if (line.indexOf("online") !== -1) {
+                        running = true;
+                    }
+                    break;
                 }
-                break;
+            }
+            if (running) {
+                autoLog("Another server-mode instance is running. Exiting...", "Main");
+                process.exit(0);
             }
         }
-        if (running) {
-            autoLog("Another server-mode instance is running. Exiting...", "Main");
-            process.exit(0);
-        }
-
         // Start script
         autoLog("Running in single mode.", "Main");
         singleMode(config.manual_confirm).then(() => {
