@@ -17,6 +17,10 @@ import {
 } from "./data_util";
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
+import {notify} from "node-notifier";
+import {Config} from "../types/config";
+
+const config: Config = require("../../config.json");
 
 
 /**
@@ -175,7 +179,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Get China anime object
             const chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
             if (!chinaItem) {
-                // incrementProgressBar();
+                incrementProgressBar();
                 autoLog(`Cannot construct cn_anime object for bgm=${bangumiItem.bgm_id}.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
                     bgm: bangumiItem,
@@ -186,7 +190,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Match China anime object to global
             const globalItem = await matchChinaToGlobal(chinaItem);
             if (globalItem) {
-                // incrementProgressBar();
+                incrementProgressBar();
                 result[i] = {
                     bgm: bangumiItem,
                     global: globalItem,
@@ -212,7 +216,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
 
                     // Check two object, enable strict mode when similarity is below 0.75
                     if (await compareChinaWithGlobal(chinaItem, newGlobalItem, maxSimilarity < 0.75)) {
-                        // incrementProgressBar();
+                        incrementProgressBar();
                         result[i] = {
                             bgm: bangumiItem,
                             global: newGlobalItem,
@@ -249,6 +253,13 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
         }
     }
     autoLog(`${failedCount}/${result.length} entries cannot be matched.`, "matchEntry", LogLevel.Info);
+
+    if (failedCount > 0 && config.enable_notifications && process.argv[2] === "--server") {
+        notify({
+            title: "Bangumi-Sync",
+            message: `${failedCount} bangumi entries cannot be matched to anilist, see log for details.`,
+        });
+    }
 
     return result.map(element => element.bgm);
 }

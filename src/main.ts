@@ -11,6 +11,7 @@ import {
 import * as readline from "readline";
 import {Config} from "./types/config";
 import {autoLog, autoLogException} from "./utils/log_util";
+import {notify} from "node-notifier";
 
 const config: Config = require("../config.json");
 
@@ -81,7 +82,6 @@ async function singleMode(userConfirm: boolean) {
     }
 }
 
-
 async function serverMode() {
     /* Initialize */
     autoLog("Initializing...", "Main");
@@ -131,6 +131,13 @@ async function serverMode() {
         let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
         autoLog(`${successCount} changes successfully applied.`, "Main");
 
+        if (successCount != changeLog.length && config.enable_notifications) {
+            notify({
+                title: "Bangumi-Sync",
+                message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
+            });
+        }
+
         autoLog(`Sleeping for ${config.server_mode_interval} seconds...`, "Main");
         await sleep(config.server_mode_interval * 1000);
     }
@@ -143,7 +150,16 @@ if (process.argv[2] === "--server") {
         process.exit(0);
     }).catch(e => {
         autoLogException(e);
-        process.exit(1);
+        if (config.enable_notifications) {
+            notify({
+                title: "Bangumi-Sync",
+                message: `Unhandled exception, exiting: ${e.message}`,
+            }, () => {
+                process.exit(1);
+            });
+        } else {
+            process.exit(1);
+        }
     })
 } else {
     // Check pm2 to see if another instance is running

@@ -22,6 +22,7 @@
   "devDependencies": {
     "@types/cli-progress": "^3.11.0",
     "@types/node": "^17.0.31",
+    "@types/node-notifier": "^8.0.2",
     "@types/string-similarity": "^4.0.0",
     "rimraf": "^3.0.2",
     "ts-node": "^10.7.0",
@@ -35,6 +36,7 @@
     "fuse.js": "^6.6.0",
     "fuzzysort": "^1.2.1",
     "limiter": "^2.1.0",
+    "node-notifier": "^10.0.1",
     "open": "^8.4.0",
     "string-similarity": "^4.0.4"
   }

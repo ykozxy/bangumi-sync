@@ -1,6 +1,7 @@
 {
     "manual_confirm": true,
     "server_mode_interval": 3600,
+    "enable_notifications": true,
     "cache_path": "./cache/",
     "log_path": "./log/",
     "log_file_level": "info",
