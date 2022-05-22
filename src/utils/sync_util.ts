@@ -7,19 +7,16 @@ import {GlobalAnimeItem} from "../types/global_anime_data";
 import {
     compareChinaWithGlobal,
     getAnilistId,
-    getBgmId,
     getChinaAnimeItem,
     getGlobalAnimeItemByAnilist,
     getGlobalAnimeItemByMal,
     getMalId,
     ignore_entries,
     manual_relations,
-    matchChinaToGlobal,
-    matchGlobalToChina
+    matchChinaToGlobal
 } from "./data_util";
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
-import {ChinaAnimeItem} from "../types/china_anime_data";
 
 
 /**
