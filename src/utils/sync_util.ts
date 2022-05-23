@@ -264,8 +264,13 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
     return result.map(element => element.bgm);
 }
 
-
-export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[]): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
+/**
+ * Generate changelog for between anilist and bangumi collections.
+ * @param bangumiCollection
+ * @param anilistCollection
+ * @param syncComment
+ */
+export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
     for (let bangumi of bangumiCollection) {
@@ -313,6 +318,13 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
                 after: bangumi,
             });
         }
+
+        if (syncComment && anilist.comments != bangumi.comments) {
+            result.push({
+                before: anilist,
+                after: bangumi,
+            });
+        }
     }
 
     return result;
@@ -322,9 +334,10 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
  * @description Pretty format changelog
  * @param before Collection before changes
  * @param after Collection after changes
+ * @param syncComment Whether to sync comments
  * @param join_str The string to separate each field
  */
-export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, join_str = "\n"): string {
+export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, syncComment: boolean, join_str = "\n"): string {
     let results: string[] = [];
 
     if (!before || before.score != after.score) {
@@ -335,6 +348,13 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     }
     if (!before || before.watched_episodes != after.watched_episodes) {
         results.push(`Watched episodes: ${before ? before.watched_episodes : 'NA'} -> ${after.watched_episodes}`);
+    }
+    if (syncComment) {
+        if (before && before.comments != after.comments) {
+            results.push(`Comments: ${before ? before.comments : 'NA'} -> ${after.comments}`);
+        } else if (!before && after.comments) {
+            results.push(`Comments: NA -> ${after.comments}`);
+        }
     }
 
     return results.join(join_str);

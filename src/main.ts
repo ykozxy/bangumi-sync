@@ -40,7 +40,7 @@ async function singleMode(userConfirm: boolean) {
     await sleep(200);
 
     autoLog("Generating changelog...", "Main");
-    let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
+    let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
     for (let change of changeLog) {
         let name = "";
         if (change.after.bgm_id) {
@@ -52,7 +52,7 @@ async function singleMode(userConfirm: boolean) {
         }
         if (!name) name = <string>change.after.bgm_id;
         autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
-        autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
+        autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
     }
     autoLog(`${changeLog.length} changes.`, "Main");
 
@@ -72,12 +72,12 @@ async function singleMode(userConfirm: boolean) {
             });
         });
         if (confirm) {
-            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
             autoLog(`${successCount} changes successfully applied.`, "Main");
         }
     } else {
         await sleep(200);
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after, config.sync_comments));
         autoLog(`${successCount} changes successfully applied.`, "Main");
     }
 }
@@ -111,7 +111,7 @@ async function serverMode() {
         bangumiCollection = await fillBangumiCollection(bangumiCollection);
 
         autoLog("Generating changelog...", "Main");
-        let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
+        let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
 
         for (let change of changeLog) {
             let name = "";
@@ -124,11 +124,11 @@ async function serverMode() {
             }
             if (!name) name = <string>change.after.bgm_id;
             autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
-            autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
+            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
         }
 
         autoLog("Updating Anilist collections...", "Main");
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
         autoLog(`${successCount} changes successfully applied.`, "Main");
 
         if (successCount != changeLog.length && config.enable_notifications) {

@@ -59,9 +59,10 @@ pm2 describe bangumi-sync
 
 | 变量                          | 描述                                             | 可选参数                               |
 |-----------------------------|------------------------------------------------|------------------------------------|
+| `sync_comments`             | 是否同步评论                                         | `true` / `false`                   |
 | `manual_confirm`            | 是否在上传更新前手动确认，`server` 模式中自动关闭                  | `true` / `false`                   |
 | `server_mode_interval`      | 控制 `server` 模式中两次同步的时间间隔（秒）                    | `number`                           |
-| `enable_notifications`      | 是否在 `server` 模式中开启桌面通知（仅失败时）                   | `boolean`                          |
+| `enable_notifications`      | 是否在 `server` 模式中开启桌面通知（仅失败时）                   | `true` / `false`                   |
 | `cache_path`                | 缓存路径                                           | 相对路径                               |
 | `log_path`                  | 日志文件路径                                         | 相对路径                               |
 | `log_file_level`            | 日志文件最低输出级别                                     | `debug` / `info`/ `warn` / `error` |

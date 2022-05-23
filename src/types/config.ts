@@ -1,4 +1,5 @@
 export interface Config {
+    sync_comments: boolean;
     manual_confirm: boolean;
     server_mode_interval: number;  // in seconds
     enable_notifications: boolean;
