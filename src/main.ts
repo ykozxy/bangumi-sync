@@ -11,6 +11,7 @@ import {
 import * as readline from "readline";
 import {Config} from "./types/config";
 import {autoLog, autoLogException} from "./utils/log_util";
+import {notify} from "node-notifier";
 
 const config: Config = require("../config.json");
 
@@ -39,7 +40,7 @@ async function singleMode(userConfirm: boolean) {
     await sleep(200);
 
     autoLog("Generating changelog...", "Main");
-    let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
+    let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
     for (let change of changeLog) {
         let name = "";
         if (change.after.bgm_id) {
@@ -51,7 +52,7 @@ async function singleMode(userConfirm: boolean) {
         }
         if (!name) name = <string>change.after.bgm_id;
         autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
-        autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
+        autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
     }
     autoLog(`${changeLog.length} changes.`, "Main");
 
@@ -71,16 +72,15 @@ async function singleMode(userConfirm: boolean) {
             });
         });
         if (confirm) {
-            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
             autoLog(`${successCount} changes successfully applied.`, "Main");
         }
     } else {
         await sleep(200);
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after, config.sync_comments));
         autoLog(`${successCount} changes successfully applied.`, "Main");
     }
 }
-
 
 async function serverMode() {
     /* Initialize */
@@ -111,7 +111,7 @@ async function serverMode() {
         bangumiCollection = await fillBangumiCollection(bangumiCollection);
 
         autoLog("Generating changelog...", "Main");
-        let changeLog = await generateChangelog(bangumiCollection, anilistCollection);
+        let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
 
         for (let change of changeLog) {
             let name = "";
@@ -124,12 +124,19 @@ async function serverMode() {
             }
             if (!name) name = <string>change.after.bgm_id;
             autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
-            autoLog(renderDiff(change.before, change.after, "; "), "RenderDiff");
+            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
         }
 
         autoLog("Updating Anilist collections...", "Main");
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after));
+        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
         autoLog(`${successCount} changes successfully applied.`, "Main");
+
+        if (successCount != changeLog.length && config.enable_notifications) {
+            notify({
+                title: "Bangumi-Sync",
+                message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
+            });
+        }
 
         autoLog(`Sleeping for ${config.server_mode_interval} seconds...`, "Main");
         await sleep(config.server_mode_interval * 1000);
@@ -137,37 +144,54 @@ async function serverMode() {
 }
 
 
+// async function debug() {
+//     await buildDatabase();
+//     await anilistClient.checkToken();
+//
+//     let anilistCollection = await getAnilistCollections();
+//     let matched = await fillAnilistCollection(anilistCollection);
+//     console.log(matched);
+// }
+//
+// debug().then(r => process.exit(0));
+
 if (process.argv[2] === "--server") {
     autoLog("Running in server mode.", "Main");
     serverMode().then(() => {
         process.exit(0);
     }).catch(e => {
         autoLogException(e);
-        process.exit(1);
+        if (config.enable_notifications) {
+            notify({
+                title: "Bangumi-Sync",
+                message: `Unhandled exception, exiting: ${e.message}`,
+            }, () => {
+                process.exit(1);
+            });
+        } else {
+            process.exit(1);
+        }
     })
 } else {
     // Check pm2 to see if another instance is running
     let exec = require('child_process').exec;
     exec('pm2 list', (err: Error, stdout: string) => {
-        if (err) {
-            autoLogException(err);
-            return;
-        }
-        let lines = stdout.split("\n");
-        let running = false;
-        for (let line of lines) {
-            if (line.indexOf("bangumi-sync") !== -1) {
-                if (line.indexOf("online") !== -1) {
-                    running = true;
+        if (!err) {
+            let lines = stdout.split("\n");
+            let running = false;
+            for (let line of lines) {
+                if (line.indexOf("bangumi-sync") !== -1) {
+                    if (line.indexOf("online") !== -1) {
+                        running = true;
+                    }
+                    break;
                 }
-                break;
+            }
+            if (running) {
+                autoLog("Another server-mode instance is running. Exiting...", "Main");
+                process.exit(0);
             }
         }
-        if (running) {
-            autoLog("Another server-mode instance is running. Exiting...", "Main");
-            process.exit(0);
-        }
-
         // Start script
         autoLog("Running in single mode.", "Main");
         singleMode(config.manual_confirm).then(() => {

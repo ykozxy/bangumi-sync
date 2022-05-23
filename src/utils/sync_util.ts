@@ -20,6 +20,10 @@ import {
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
 import {ChinaAnimeItem} from "../types/china_anime_data";
+import {notify} from "node-notifier";
+import {Config} from "../types/config";
+
+const config: Config = require("../../config.json");
 
 
 /**
@@ -178,7 +182,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Get China anime object
             const chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
             if (!chinaItem) {
-                // incrementProgressBar();
+                incrementProgressBar();
                 autoLog(`Cannot construct cn_anime object for bgm=${bangumiItem.bgm_id}.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
                     bgm: bangumiItem,
@@ -189,7 +193,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // Match China anime object to global
             const globalItem = await matchChinaToGlobal(chinaItem);
             if (globalItem) {
-                // incrementProgressBar();
+                incrementProgressBar();
                 result[i] = {
                     bgm: bangumiItem,
                     global: globalItem,
@@ -215,7 +219,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
 
                     // Check two object, enable strict mode when similarity is below 0.75
                     if (await compareChinaWithGlobal(chinaItem, newGlobalItem, maxSimilarity < 0.75)) {
-                        // incrementProgressBar();
+                        incrementProgressBar();
                         result[i] = {
                             bgm: bangumiItem,
                             global: newGlobalItem,
@@ -253,9 +257,15 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
     }
     autoLog(`${failedCount}/${result.length} entries cannot be matched.`, "matchEntry", LogLevel.Info);
 
+    if (failedCount > 0 && config.enable_notifications && process.argv[2] === "--server") {
+        notify({
+            title: "Bangumi-Sync",
+            message: `${failedCount} bangumi entries cannot be matched to anilist, see log for details.`,
+        });
+    }
+
     return result.map(element => element.bgm);
 }
-
 
 /**
  * @description Match and fill bgm_id from cn anime objects for Anilist collections.
@@ -385,11 +395,12 @@ export async function fillAnilistCollection(anilistCollection: AnimeCollection[]
 }
 
 /**
- * @description Compare anilist collections to bangumi and generate a list of changes (apply to anilist)
- * @param bangumiCollection Bangumi collection
- * @param anilistCollection Anilist collection
+ * Generate changelog for between anilist and bangumi collections.
+ * @param bangumiCollection
+ * @param anilistCollection
+ * @param syncComment
  */
-export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[]): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
+export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
     for (let bangumi of bangumiCollection) {
@@ -437,6 +448,13 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
                 after: bangumi,
             });
         }
+
+        if (syncComment && anilist.comments != bangumi.comments) {
+            result.push({
+                before: anilist,
+                after: bangumi,
+            });
+        }
     }
 
     return result;
@@ -446,9 +464,10 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
  * @description Pretty format changelog
  * @param before Collection before changes
  * @param after Collection after changes
+ * @param syncComment Whether to sync comments
  * @param join_str The string to separate each field
  */
-export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, join_str = "\n"): string {
+export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, syncComment: boolean, join_str = "\n"): string {
     let results: string[] = [];
 
     if (!before || before.score != after.score) {
@@ -459,6 +478,13 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     }
     if (!before || before.watched_episodes != after.watched_episodes) {
         results.push(`Watched episodes: ${before ? before.watched_episodes : 'NA'} -> ${after.watched_episodes}`);
+    }
+    if (syncComment) {
+        if (before && before.comments != after.comments) {
+            results.push(`Comments: ${before ? before.comments : 'NA'} -> ${after.comments}`);
+        } else if (!before && after.comments) {
+            results.push(`Comments: NA -> ${after.comments}`);
+        }
     }
 
     return results.join(join_str);
