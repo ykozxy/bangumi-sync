@@ -206,15 +206,16 @@ class AnilistClient {
             };
 
             // Use single query if there's only one collection
-            if (collections.length == 1) {
-                const c = collections[0];
-                const id = await findAnilistId(c);
-                if (id) {
-                    c.anilist_id = id;
-                    await this.saveEntry(c, syncComment);
-                    successCount++;
+            if (collections.length == 1 || collection.length <= 70) {
+                for (let c of collections) {
+                    const id = await findAnilistId(c);
+                    if (id) {
+                        c.anilist_id = id;
+                        await this.saveEntry(c, syncComment);
+                        successCount++;
+                    }
+                    incrementProgressBar();
                 }
-                incrementProgressBar();
                 continue;
             }
 
@@ -382,7 +383,7 @@ class AnilistClient {
             }
 
             // Check episodes
-            if (media.episodes !== gl?.episodes) continue;
+            // if (media.episodes !== gl?.episodes) continue;
 
             return media.id;
         }

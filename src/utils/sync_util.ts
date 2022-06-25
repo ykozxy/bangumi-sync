@@ -396,11 +396,12 @@ export async function fillAnilistCollection(anilistCollection: AnimeCollection[]
 
 /**
  * Generate changelog for between anilist and bangumi collections.
- * @param bangumiCollection
- * @param anilistCollection
- * @param syncComment
+ * @param bangumiCollection The bangumi collection to be matched.
+ * @param anilistCollection The anilist collection to be matched.
+ * @param syncComment Whether to sync comment.
+ * @param backward Whether to generate backward changelog (from anilist to bangumi).
  */
-export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
+export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean, backward: boolean = false): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
     for (let bangumi of bangumiCollection) {

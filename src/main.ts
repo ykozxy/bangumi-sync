@@ -51,7 +51,7 @@ async function singleMode(userConfirm: boolean) {
             })
         }
         if (!name) name = <string>change.after.bgm_id;
-        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
+        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
         autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
     }
     autoLog(`${changeLog.length} changes.`, "Main");
@@ -123,7 +123,7 @@ async function serverMode() {
                 })
             }
             if (!name) name = <string>change.after.bgm_id;
-            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "Main");
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
             autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
         }
 
