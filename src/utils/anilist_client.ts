@@ -192,6 +192,7 @@ class AnilistClient {
             const status = AnilistClient.convertStatus(collections[0].status);
 
             const findAnilistId = async (c: AnimeCollection) => {
+                if (c.anilist_id) return c.anilist_id;
                 if (!c.mal_id) throw new Error("Anilist and Bangumi ID both missing.");
                 let id: string | null = await getAnilistId(c.mal_id);
                 if (!id) {
