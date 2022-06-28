@@ -10,6 +10,7 @@
 export interface GlobalAnimeData {
     license: License;
     repository: string;
+    lastUpdate: Date;
     data: GlobalAnimeItem[];
 }
 
@@ -210,6 +211,7 @@ const typeMap: any = {
     "GlobalAnimeData": o([
         {json: "license", js: "license", typ: r("License")},
         {json: "repository", js: "repository", typ: ""},
+        {json: "lastUpdate", js: "lastUpdate", typ: Date},
         {json: "data", js: "data", typ: a(r("Datum"))},
     ], false),
     "Datum": o([
