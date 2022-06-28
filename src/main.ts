@@ -146,13 +146,8 @@ async function serverMode() {
 
 // async function debug() {
 //     await buildDatabase();
-//     await anilistClient.checkToken();
-//
-//     let anilistCollection = await getAnilistCollections();
-//     let matched = await fillAnilistCollection(anilistCollection);
-//     console.log(matched);
+//     console.log(getGlobalAnimeItemByAnilist("151384"));
 // }
-//
 // debug().then(r => process.exit(0));
 
 if (process.argv[2] === "--server") {

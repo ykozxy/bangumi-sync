@@ -1,21 +1,8 @@
 import axios from "axios";
 import fs from "fs";
 import stringSimilarity from "string-similarity";
-import {
-    ChinaAnimeData,
-    ChinaAnimeItem,
-    ChinaAnimeType,
-    ConvertChinaAnime,
-    Lang,
-    SiteEnum
-} from "../types/china_anime_data";
-import {
-    ConvertGlobalAnime,
-    GlobalAnimeData,
-    GlobalAnimeItem,
-    GlobalAnimeType,
-    Season
-} from "../types/global_anime_data";
+import {ChinaAnimeData} from "../types/china_anime_data";
+import {GlobalAnimeData} from "../types/global_anime_data";
 import {Config, IgnoreEntries, ManualRelations} from "../types/config";
 import {EtagType, Relation} from "../types/cache";
 import {getEtagCache, setEtagCache} from "./cache_util";
@@ -24,10 +11,10 @@ import {autoLog, autoLogException, LogLevel} from "./log_util";
 
 const config: Config = require("../../config.json");
 
-let china_anime_data: ChinaAnimeData;
-let global_anime_data: GlobalAnimeData;
-const bgm_id_map: Map<string, ChinaAnimeItem> = new Map();
-const mal_id_map: Map<string, GlobalAnimeItem[]> = new Map();
+let china_anime_data: ChinaAnimeData.Item[];
+let global_anime_data: GlobalAnimeData.Item[];
+const bgm_id_map: Map<string, ChinaAnimeData.Item> = new Map();
+const mal_id_map: Map<string, GlobalAnimeData.Item[]> = new Map();
 let known_relations: Relation[] = [];
 
 export const manual_relations: ManualRelations = require("../../manual_relations.json");
@@ -46,13 +33,13 @@ export async function buildDatabase(): Promise<void> {
     await autoUpdateDatabase();
 
     // Update exported variables
-    china_anime_data = ConvertChinaAnime.toChinaAnimeData(fs.readFileSync(config.cache_path + '/china_anime.json').toString());
-    global_anime_data = ConvertGlobalAnime.toGlobalAnimeData(fs.readFileSync(config.cache_path + '/global_anime.json').toString())
+    china_anime_data = ChinaAnimeData.loadData(JSON.parse(fs.readFileSync(config.cache_path + '/china_anime.json').toString()));
+    global_anime_data = GlobalAnimeData.loadData(JSON.parse(fs.readFileSync(config.cache_path + '/global_anime.json').toString()));
 
     // Build id map
     bgm_id_map.clear();
     mal_id_map.clear();
-    china_anime_data.items.forEach(item => {
+    china_anime_data.forEach(item => {
         const id = getBgmId(item);
         if (!id) {
             // console.warn(`[${loadData.name}] No bgm.tv record for ${item.title}`);
@@ -60,8 +47,8 @@ export async function buildDatabase(): Promise<void> {
         }
         bgm_id_map.set(id, item);
     });
-    global_anime_data.data.forEach(item => {
-        const id = getMalId(item);
+    global_anime_data.forEach(item => {
+        const id = item.sites["MyAnimeList"];
         if (!id) {
             // console.warn(`[${loadData.name}] No bgm.tv record for ${item.title}`);
             return;
@@ -69,7 +56,7 @@ export async function buildDatabase(): Promise<void> {
         if (!mal_id_map.has(id)) {
             mal_id_map.set(id, []);
         }
-        (<GlobalAnimeItem[]>mal_id_map.get(id)).push(item);
+        (<GlobalAnimeData.Item[]>mal_id_map.get(id)).push(item);
     });
 
     // Load cached relations
@@ -84,7 +71,7 @@ export async function buildDatabase(): Promise<void> {
  * @param check_fields Whether to ensure all fields are present when fetching from bgm.tv.
  * @returns The anime data, or null if not found.
  */
-export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = true): Promise<ChinaAnimeItem | null> {
+export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = true): Promise<ChinaAnimeData.Item | null> {
     const cn_anime = bgm_id_map.get(bgm_id);
     if (cn_anime) return cn_anime;
 
@@ -95,19 +82,19 @@ export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = 
 
     // Ensure bgm_subject has all required fields
     if (check_fields && !bgm_subject.date) return null;
-    let type: ChinaAnimeType;
+    let type: ChinaAnimeData.Type;
     switch (bgm_subject.platform) {
         case "TV":
-            type = ChinaAnimeType.Tv;
+            type = ChinaAnimeData.Type.Tv;
             break;
         case "OVA":
-            type = ChinaAnimeType.Ova;
+            type = ChinaAnimeData.Type.Ova;
             break;
         case "WEB":
-            type = ChinaAnimeType.Web;
+            type = ChinaAnimeData.Type.Web;
             break;
         case "剧场版":
-            type = ChinaAnimeType.Movie;
+            type = ChinaAnimeData.Type.Movie;
             break;
         default:
             return null;
@@ -116,10 +103,7 @@ export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = 
     return {
         // Set date to now if date is null
         begin: bgm_subject.date ? new Date(bgm_subject.date) : new Date(),
-        end: "",
-        lang: Lang.Ja,
-        officialSite: "",
-        sites: [{site: SiteEnum.Bangumi, id: bgm_id}],
+        sites: [{site: "bangumi", id: bgm_id}],
         title: bgm_subject.name,
         titleTranslate: bgm_subject.name_cn ? {"zh-Hans": [bgm_subject.name_cn]} : {},
         type: type,
@@ -132,7 +116,7 @@ export async function getChinaAnimeItem(bgm_id: string, check_fields: boolean = 
  * @param mal_id myanimelist id of the anime.
  * @returns The anime data, or null if not found.
  */
-export async function getGlobalAnimeItemByMal(mal_id: string): Promise<GlobalAnimeItem | null> {
+export async function getGlobalAnimeItemByMal(mal_id: string): Promise<GlobalAnimeData.Item | null> {
     let res = mal_id_map.get(mal_id);
     if (res) return res[0];
     return null;
@@ -142,12 +126,9 @@ export async function getGlobalAnimeItemByMal(mal_id: string): Promise<GlobalAni
  * @description Get global anime object by anilist id. Because this function is not frequently called, performance is not optimized.
  * @param anilist_id anilist id of the anime.
  */
-export async function getGlobalAnimeItemByAnilist(anilist_id: string): Promise<GlobalAnimeItem | null> {
-    for (let item of global_anime_data.data) {
-        let res = item?.sources.find(site => {
-            return site.match(/anilist/);
-        })?.match(/anime\/(\d+)/)![1];
-        if (res == anilist_id) {
+export function getGlobalAnimeItemByAnilist(anilist_id: string): GlobalAnimeData.Item | null {
+    for (let item of global_anime_data) {
+        if (item.sites["AniList"] == anilist_id) {
             return item;
         }
     }
@@ -160,7 +141,7 @@ export async function getGlobalAnimeItemByAnilist(anilist_id: string): Promise<G
  * @param titleSimilarityThreshold Lower bound of title similarity when fuzzy matching.
  * @returns The matched global anime object, or null if not found.
  */
-export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThreshold: number = 0.75): Promise<GlobalAnimeItem | null> {
+export async function matchChinaToGlobal(cn: ChinaAnimeData.Item, titleSimilarityThreshold: number = 0.75): Promise<GlobalAnimeData.Item | null> {
     // First, check known relations
     const bgm_id = getBgmId(cn);
     if (!bgm_id) {
@@ -180,9 +161,9 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
     for (const [, names] of Object.entries(cn.titleTranslate)) if (names) cnTitles.push(...names);
 
     // Fuzzy match titles in global database
-    const fuzzyMatch: { anime: GlobalAnimeItem, score: number }[] = [];
-    let bestMatch: { anime?: GlobalAnimeItem, score: number } = {score: 0};
-    global_anime_data.data.forEach(gl => {
+    const fuzzyMatch: { anime: GlobalAnimeData.Item, score: number }[] = [];
+    let bestMatch: { anime?: GlobalAnimeData.Item, score: number } = {score: 0};
+    global_anime_data.forEach(gl => {
         const glTitles = [gl.title, ...gl.synonyms];
         for (const title of cnTitles) {
             const score = stringSimilarity.findBestMatch(title, glTitles).bestMatch.rating;
@@ -207,7 +188,7 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
         if (!await compareChinaWithGlobal(cn, anime, strictMode)) continue;
 
         // Store match to relations
-        const mal_id = getMalId(anime);
+        const mal_id = anime.sites["MyAnimeList"];
         if (!mal_id) {
             // progressBarLog(`[${matchChinaToGlobal.name}] Failed to find MAL id for "${cn.title}"`);
             continue;
@@ -221,7 +202,7 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
         // Save known relations
         fs.writeFileSync(config.cache_path + '/known_relations.json', JSON.stringify(known_relations, null, 4));
 
-        autoLog(`score=${score}, "${cn.title}" matched to "${anime.title}"`, "matchEntry", LogLevel.Info);
+        autoLog(`score=${score.toPrecision(3)}, "${cn.title}" matched to "${anime.title}"`, "matchEntry", LogLevel.Info);
         // incrementProgressBar();
         return anime;
     }
@@ -236,9 +217,9 @@ export async function matchChinaToGlobal(cn: ChinaAnimeItem, titleSimilarityThre
  * @param titleSimilarityThreshold Lower bound of title similarity when fuzzy matching.
  * @returns The matched global anime object, or null if not found.
  */
-export async function matchGlobalToChina(gl: GlobalAnimeItem, titleSimilarityThreshold: number = 0.75): Promise<ChinaAnimeItem | null> {
+export async function matchGlobalToChina(gl: GlobalAnimeData.Item, titleSimilarityThreshold: number = 0.75): Promise<ChinaAnimeData.Item | null> {
     // First, check known relations
-    const mal_id = getMalId(gl);
+    const mal_id = gl.sites["MyAnimeList"];
     if (!mal_id) {
         autoLog(`Failed to find MAL id for "${gl.title}.`, "matchEntry", LogLevel.Warn);
         // incrementProgressBar();
@@ -255,9 +236,9 @@ export async function matchGlobalToChina(gl: GlobalAnimeItem, titleSimilarityThr
     const glTitles = [gl.title, ...gl.synonyms];
 
     // Fuzzy match titles in cn database
-    const fuzzyMatch: { cn_anime: ChinaAnimeItem, score: number }[] = [];
-    let bestMatch: { anime?: ChinaAnimeItem, score: number } = {score: 0};
-    china_anime_data.items.forEach(cn => {
+    const fuzzyMatch: { cn_anime: ChinaAnimeData.Item, score: number }[] = [];
+    let bestMatch: { anime?: ChinaAnimeData.Item, score: number } = {score: 0};
+    china_anime_data.forEach(cn => {
         const cnTitles = [cn.title];
         for (const [, names] of Object.entries(cn.titleTranslate)) if (names) cnTitles.push(...names);
         for (const title of cnTitles) {
@@ -297,7 +278,7 @@ export async function matchGlobalToChina(gl: GlobalAnimeItem, titleSimilarityThr
         // Save known relations
         fs.writeFileSync(config.cache_path + '/known_relations.json', JSON.stringify(known_relations, null, 4));
 
-        autoLog(`score=${score}, "${gl.title}" matched to "${cn_anime.title}"`, "matchEntry", LogLevel.Info);
+        autoLog(`score=${score.toPrecision(3)}, "${gl.title}" matched to "${cn_anime.title}"`, "matchEntry", LogLevel.Info);
         // incrementProgressBar();
         return cn_anime;
     }
@@ -315,48 +296,48 @@ export async function matchGlobalToChina(gl: GlobalAnimeItem, titleSimilarityThr
  * @param matchMonth    When true, air date will be checked to month.
  * @param matchFormat    When true, same format will be ensured.
  */
-export async function compareChinaWithGlobal(china: ChinaAnimeItem, global: GlobalAnimeItem, strictMode: boolean, matchMonth: boolean = true, matchFormat: boolean = true): Promise<boolean> {
+export async function compareChinaWithGlobal(china: ChinaAnimeData.Item, global: GlobalAnimeData.Item, strictMode: boolean, matchMonth: boolean = true, matchFormat: boolean = true): Promise<boolean> {
     // If years mismatch, skip
     if (china.begin.getFullYear() != global.animeSeason.year)
         return false;
 
     // Check season
     const month = china.begin.getMonth() + 1;
-    if (matchMonth && global.animeSeason.season !== Season.Undefined) {
+    if (matchMonth && global.animeSeason.season !== GlobalAnimeData.Season.Undefined) {
         if (strictMode) {
-            if (global.animeSeason.season !== Season.Winter && month < 4) return false;
-            if (global.animeSeason.season !== Season.Spring && month < 7) return false;
-            if (global.animeSeason.season !== Season.Summer && month < 10) return false;
-            if (global.animeSeason.season !== Season.Fall && month < 13) return false;
+            if (global.animeSeason.season !== GlobalAnimeData.Season.Winter && month < 4) return false;
+            if (global.animeSeason.season !== GlobalAnimeData.Season.Spring && month < 7) return false;
+            if (global.animeSeason.season !== GlobalAnimeData.Season.Summer && month < 10) return false;
+            if (global.animeSeason.season !== GlobalAnimeData.Season.Fall && month < 13) return false;
         } else {
             switch (month) {
                 case 1:
                 case 2:
-                    if (global.animeSeason.season !== Season.Winter) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Winter) return false;
                     break;
                 case 3:
-                    if (global.animeSeason.season !== Season.Winter && global.animeSeason.season !== Season.Spring) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Winter && global.animeSeason.season !== GlobalAnimeData.Season.Spring) return false;
                     break;
                 case 4:
                 case 5:
-                    if (global.animeSeason.season !== Season.Spring) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Spring) return false;
                     break;
                 case 6:
-                    if (global.animeSeason.season !== Season.Spring && global.animeSeason.season !== Season.Summer) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Spring && global.animeSeason.season !== GlobalAnimeData.Season.Summer) return false;
                     break;
                 case 7:
                 case 8:
-                    if (global.animeSeason.season !== Season.Summer) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Summer) return false;
                     break;
                 case 9:
-                    if (global.animeSeason.season !== Season.Summer && global.animeSeason.season !== Season.Fall) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Summer && global.animeSeason.season !== GlobalAnimeData.Season.Fall) return false;
                     break;
                 case 10:
                 case 11:
-                    if (global.animeSeason.season !== Season.Fall) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Fall) return false;
                     break;
                 case 12:
-                    if (global.animeSeason.season !== Season.Fall && global.animeSeason.season !== Season.Winter) return false;
+                    if (global.animeSeason.season !== GlobalAnimeData.Season.Fall && global.animeSeason.season !== GlobalAnimeData.Season.Winter) return false;
                     break;
                 default:
                     return false;
@@ -366,20 +347,20 @@ export async function compareChinaWithGlobal(china: ChinaAnimeItem, global: Glob
 
     // Check format
     let mismatch = false;
-    if (matchFormat && global.type !== GlobalAnimeType.Unknown) {
+    if (matchFormat && global.type !== GlobalAnimeData.Type.Unknown) {
         switch (china.type) {
-            case ChinaAnimeType.Tv:
-                if (global.type !== GlobalAnimeType.Tv) mismatch = true;
+            case ChinaAnimeData.Type.Tv:
+                if (global.type !== GlobalAnimeData.Type.Tv) mismatch = true;
                 break;
-            case ChinaAnimeType.Web:
-                if (global.type !== GlobalAnimeType.Ona) mismatch = true;
+            case ChinaAnimeData.Type.Web:
+                if (global.type !== GlobalAnimeData.Type.Ona) mismatch = true;
                 break;
-            case ChinaAnimeType.Ova:
-                if (global.type !== GlobalAnimeType.Ova && global.type !== GlobalAnimeType.Special)
+            case ChinaAnimeData.Type.Ova:
+                if (global.type !== GlobalAnimeData.Type.Ova && global.type !== GlobalAnimeData.Type.Special)
                     mismatch = true;
                 break;
-            case ChinaAnimeType.Movie:
-                if (global.type !== GlobalAnimeType.Movie) mismatch = true;
+            case ChinaAnimeData.Type.Movie:
+                if (global.type !== GlobalAnimeData.Type.Movie) mismatch = true;
                 break;
         }
     }
@@ -391,19 +372,9 @@ export async function compareChinaWithGlobal(china: ChinaAnimeItem, global: Glob
  * @description Get bgm id of a china anime object.
  * @param cn An cn anime object.
  */
-export function getBgmId(cn: ChinaAnimeItem): string | null {
+export function getBgmId(cn: ChinaAnimeData.Item): string | null {
     // TODO: construct map from cnItem to bgm_id for anime not in database
-    return cn.sites.find(s => s.site === SiteEnum.Bangumi)?.id || null;
-}
-
-/**
- * @description Get myanimelist id of a global anime object.
- * @param gl An global anime object.
- */
-export function getMalId(gl: GlobalAnimeItem): string | null {
-    return gl.sources.find(site => {
-        return site.match(/myanimelist/)
-    })?.match(/anime\/(\d+)/)![1] || null;
+    return cn.sites.find(s => s.site === "bangumi")?.id || null;
 }
 
 
@@ -415,10 +386,7 @@ export function getAnilistId(malId: string): string | null {
     let gls = mal_id_map.get(malId);
     if (!gls) return null;
     for (let gl of gls) {
-        let res = gl?.sources.find(site => {
-            return site.match(/anilist/)
-        })?.match(/anime\/(\d+)/)![1];
-        if (res) return res;
+        if (gl.sites["AniList"]) return gl.sites["AniList"];
     }
     return null;
 }
@@ -442,10 +410,9 @@ async function autoUpdateDatabase(): Promise<void> {
 
     // Update if etag changed
     if (china_etag !== getEtagCache(EtagType.China) || !fs.existsSync(config.cache_path + '/china_anime.json')) {
-        let china_data: ChinaAnimeData;
         try {
             autoLog("Updating china_anime database from " + config.china_anime_database_url, "updateDatabase", LogLevel.Info);
-            china_data = await axios.get(config.china_anime_database_url).then(res => res.data);
+            const china_data = await axios.get(config.china_anime_database_url).then(res => res.data);
             fs.writeFileSync(config.cache_path + '/china_anime.json', JSON.stringify(china_data));
         } catch (e) {
             autoLog("Unable to fetch china_anime database: ", "updateDatabase", LogLevel.Error);
@@ -455,10 +422,9 @@ async function autoUpdateDatabase(): Promise<void> {
     }
 
     if (global_etag !== getEtagCache(EtagType.Global) || !fs.existsSync(config.cache_path + '/global_anime.json')) {
-        let global_data: GlobalAnimeData;
         try {
             autoLog("Updating global_anime database from " + config.global_anime_database_url, "updateDatabase", LogLevel.Info);
-            global_data = await axios.get(config.global_anime_database_url).then(res => res.data);
+            const global_data = await axios.get(config.global_anime_database_url).then(res => res.data);
             fs.writeFileSync(config.cache_path + '/global_anime.json', JSON.stringify(global_data));
         } catch (e) {
             autoLog("Unable to fetch global_anime database: ", "updateDatabase", LogLevel.Error);
