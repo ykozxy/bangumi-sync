@@ -1,4 +1,4 @@
-import {buildDatabase, getChinaAnimeItem} from "./utils/data_util";
+import {buildDatabase, getChinaAnimeItem, releaseDatabase} from "./utils/data_util";
 import {bangumiClient} from "./utils/bangumi_client";
 import {anilistClient} from "./utils/anilist_client";
 import {
@@ -84,13 +84,7 @@ async function singleMode(userConfirm: boolean) {
 
 async function serverMode() {
     /* Initialize */
-    autoLog("Initializing...", "Main");
-    // Setup timer to update database every 12 hours
-    const updateDatabase = async () => {
-        await buildDatabase();
-        setTimeout(updateDatabase, 12 * 60 * 60 * 1000);
-    };
-    await updateDatabase();
+    autoLog("Getting tokens...", "Main");
 
     // Setup token auto-refresh every hour
     const refreshToken = async () => {
@@ -102,6 +96,9 @@ async function serverMode() {
 
     /* Main loop */
     while (1) {
+        autoLog("Building database...", "Main");
+        await buildDatabase();
+
         autoLog("Fetching Bangumi collections...", "Main");
         let bangumiCollection = await getBangumiCollections();
         autoLog("Fetching Anilist collections...", "Main");
@@ -137,6 +134,9 @@ async function serverMode() {
                 message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
             });
         }
+
+        autoLog("Freeing memory...", "Main");
+        releaseDatabase();
 
         autoLog(`Sleeping for ${config.server_mode_interval} seconds...`, "Main");
         await sleep(config.server_mode_interval * 1000);

@@ -66,6 +66,14 @@ export async function buildDatabase(): Promise<void> {
 }
 
 /**
+ * @description Free memory. Clear china_anime_data and global_anime_data.
+ */
+export function releaseDatabase(): void {
+    china_anime_data = [];
+    global_anime_data = [];
+}
+
+/**
  * @description Get china anime object by bgm.tv id.
  * @param bgm_id bgm.tv id of the anime.
  * @param check_fields Whether to ensure all fields are present when fetching from bgm.tv.
