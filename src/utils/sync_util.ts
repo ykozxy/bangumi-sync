@@ -3,7 +3,6 @@ import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {MediaListStatus} from "../types/anilist_api";
 import {bangumiClient} from "./bangumi_client";
 import Scheduler from "./scheduler";
-import {GlobalAnimeItem} from "../types/global_anime_data";
 import {
     compareChinaWithGlobal,
     getAnilistId,
@@ -11,7 +10,6 @@ import {
     getChinaAnimeItem,
     getGlobalAnimeItemByAnilist,
     getGlobalAnimeItemByMal,
-    getMalId,
     ignore_entries,
     manual_relations,
     matchChinaToGlobal,
@@ -19,9 +17,10 @@ import {
 } from "./data_util";
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
-import {ChinaAnimeItem} from "../types/china_anime_data";
 import {notify} from "node-notifier";
 import {Config} from "../types/config";
+import {ChinaAnimeData} from "../types/china_anime_data";
+import {GlobalAnimeData} from "../types/global_anime_data";
 
 const config: Config = require("../../config.json");
 
@@ -142,7 +141,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
 
     // Schedule fixed amount of async jobs at most to avoid blocking and delays in console.log
     let scheduler = new Scheduler(15);
-    let result: Array<{ bgm: AnimeCollection, global?: GlobalAnimeItem }> = new Array(bangumiCollection.length);
+    let result: Array<{ bgm: AnimeCollection, global?: GlobalAnimeData.Item }> = new Array(bangumiCollection.length);
     for (let i = 0; i < bangumiCollection.length; i++) {
         let bangumiItem = bangumiCollection[i];
         // Push job to scheduler
@@ -246,7 +245,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
         if (!globalMatchedElement.global) {
             failedCount++;
         } else {
-            globalMatchedElement.bgm.mal_id = getMalId(globalMatchedElement.global) || undefined;
+            globalMatchedElement.bgm.mal_id = globalMatchedElement.global.sites["MyAnimeList"] || undefined;
 
             let manual_id = manual_relations.find(r => String(r[0]) === globalMatchedElement.bgm.bgm_id);
             globalMatchedElement.bgm.anilist_id = manual_id ? String(manual_id[1]) : undefined;
@@ -277,7 +276,7 @@ export async function fillAnilistCollection(anilistCollection: AnimeCollection[]
 
     // Schedule fixed amount of async jobs at most to avoid blocking and delays in console.log
     let scheduler = new Scheduler(15);
-    let result: Array<{ bgm?: ChinaAnimeItem, anilist: AnimeCollection }> = new Array(anilistCollection.length);
+    let result: Array<{ bgm?: ChinaAnimeData.Item, anilist: AnimeCollection }> = new Array(anilistCollection.length);
     for (let i = 0; i < anilistCollection.length; i++) {
         let anilistItem = anilistCollection[i];
         // Push job to scheduler
@@ -412,7 +411,7 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
         if (bangumi.mal_id) {
             globalEpisodeCount = await getGlobalAnimeItemByMal(bangumi.mal_id).then(item => item?.episodes || 0);
         } else {
-            globalEpisodeCount = await getGlobalAnimeItemByAnilist(String(bangumi.anilist_id)).then(item => item?.episodes || 0);
+            globalEpisodeCount = getGlobalAnimeItemByAnilist(String(bangumi.anilist_id))?.episodes || 0;
         }
         if (bangumi.status == CollectionStatus.Completed || bangumi.watched_episodes > globalEpisodeCount) {
             bangumi.watched_episodes = globalEpisodeCount;

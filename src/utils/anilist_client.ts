@@ -6,7 +6,6 @@ import {Config} from "../types/config";
 import {Media, MediaFormat, MediaList, MediaListStatus} from "../types/anilist_api";
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {getAnilistId, getGlobalAnimeItemByMal} from "./data_util";
-import {GlobalAnimeType, Season} from "../types/global_anime_data";
 import open from "open";
 import {
     autoLog,
@@ -16,6 +15,7 @@ import {
     LogLevel,
     stopProgressBar
 } from "./log_util";
+import {GlobalAnimeData} from "../types/global_anime_data";
 
 const config: Config = require("../../config.json");
 
@@ -332,19 +332,19 @@ class AnilistClient {
             switch (media.format) {
                 case MediaFormat.TV:
                 case MediaFormat.TV_SHORT:
-                    if (gl?.type !== GlobalAnimeType.Tv) continue;
+                    if (gl?.type !== GlobalAnimeData.Type.Tv) continue;
                     break;
                 case MediaFormat.MOVIE:
-                    if (gl?.type !== GlobalAnimeType.Movie) continue;
+                    if (gl?.type !== GlobalAnimeData.Type.Movie) continue;
                     break;
                 case MediaFormat.SPECIAL:
-                    if (gl?.type !== GlobalAnimeType.Special) continue;
+                    if (gl?.type !== GlobalAnimeData.Type.Special) continue;
                     break;
                 case MediaFormat.OVA:
-                    if (gl?.type !== GlobalAnimeType.Ova) continue;
+                    if (gl?.type !== GlobalAnimeData.Type.Ova) continue;
                     break;
                 case MediaFormat.ONA:
-                    if (gl?.type !== GlobalAnimeType.Ona) continue;
+                    if (gl?.type !== GlobalAnimeData.Type.Ona) continue;
                     break;
             }
 
@@ -353,31 +353,31 @@ class AnilistClient {
             switch (media.startDate.month) {
                 case 1:
                 case 2:
-                    if (gl.animeSeason.season !== Season.Winter) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Winter) continue;
                     break;
                 case 3:
-                    if (gl.animeSeason.season !== Season.Winter && gl.animeSeason.season !== Season.Spring) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Winter && gl.animeSeason.season !== GlobalAnimeData.Season.Spring) continue;
                     break;
                 case 4:
                 case 5:
-                    if (gl.animeSeason.season !== Season.Spring) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Spring) continue;
                     break;
                 case 6:
-                    if (gl.animeSeason.season !== Season.Spring && gl.animeSeason.season !== Season.Summer) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Spring && gl.animeSeason.season !== GlobalAnimeData.Season.Summer) continue;
                     break;
                 case 7:
                 case 8:
-                    if (gl.animeSeason.season !== Season.Summer) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Summer) continue;
                     break;
                 case 9:
-                    if (gl.animeSeason.season !== Season.Summer && gl.animeSeason.season !== Season.Fall) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Summer && gl.animeSeason.season !== GlobalAnimeData.Season.Fall) continue;
                     break;
                 case 10:
                 case 11:
-                    if (gl.animeSeason.season !== Season.Fall) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Fall) continue;
                     break;
                 case 12:
-                    if (gl.animeSeason.season !== Season.Fall && gl.animeSeason.season !== Season.Winter) continue;
+                    if (gl.animeSeason.season !== GlobalAnimeData.Season.Fall && gl.animeSeason.season !== GlobalAnimeData.Season.Winter) continue;
                     break;
                 default:
                     continue;
@@ -456,8 +456,7 @@ class AnilistClient {
         } catch (error: any) {
             autoLog(`Network error when querying. Retrying...`, "Anilist.query", LogLevel.Error);
             if (retry) {
-                await setTimeout(() => {
-                }, 1000);
+                await ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)))(1000);
                 return await this.query(query, variables, false);
             }
             autoLogException(error as Error);
