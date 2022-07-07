@@ -110,11 +110,7 @@ export function autoLog(message: string, tag: string = "", level: LogLevel = Log
 
     // Log to file
     if (logFile && level >= logFileLevel) {
-        // Get local date and time string
-        const date = new Date();
-        const date_str = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate()} ${date.getHours()}:${date.getMinutes()}:${date.getSeconds().toString().padStart(2, "0")}`;
-
-        fs.appendFileSync(logFile, `${date_str} ${tag_str}${level_str}: ${message}\n`);
+        fs.appendFileSync(logFile, `${getDateStr()} ${tag_str}${level_str}: ${message}\n`);
 
         // If the log file contains 1000+ lines, delete the first line.
         if (fs.readFileSync(logFile).toString().split("\n").length > 1000) {
@@ -138,11 +134,20 @@ export function autoLogException(e: Error, tag: string = "") {
     }
 }
 
+/**
+ * Get the current date and time as a formatted string.
+ * @param sep The separator between h,m,s to use.
+ * @returns The current date and time.
+ */
+function getDateStr(sep: string = ":"): string {
+    const autoPad = (num: number, len: number = 2) => num.toString().padStart(len, "0");
+    const date = new Date();
+    return `${date.getFullYear()}-${autoPad(date.getMonth() + 1)}-${autoPad(date.getDate())} ${autoPad(date.getHours())}${sep}${autoPad(date.getMinutes())}${sep}${autoPad(date.getSeconds())}`;
+}
+
 // Setup log file and level
 if (!fs.existsSync(config.log_path)) fs.mkdirSync(config.log_path);
-const date = new Date();
-const date_str = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate()} ${date.getHours()}-${date.getMinutes()}-${date.getSeconds().toString().padStart(2, "0")}`;
-logFile = `${config.log_path}/${date_str}.log`;
+logFile = `${config.log_path}/${getDateStr("-")}.log`;
 
 switch (config.log_file_level) {
     case "debug":
