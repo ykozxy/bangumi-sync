@@ -44,7 +44,7 @@ async function singleMode(userConfirm: boolean) {
     for (let change of changeLog) {
         let name = "";
         if (change.after.bgm_id) {
-            await getChinaAnimeItem(change.after.bgm_id).then(item => {
+            await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
                 if (item) {
                     name = item.title;
                 }
@@ -113,7 +113,7 @@ async function serverMode() {
         for (let change of changeLog) {
             let name = "";
             if (change.after.bgm_id) {
-                await getChinaAnimeItem(change.after.bgm_id).then(item => {
+                await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
                     if (item) {
                         name = item.title;
                     }
