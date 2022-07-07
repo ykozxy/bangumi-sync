@@ -11,7 +11,7 @@ export namespace GlobalAnimeData {
             season: Season;
             year?: number;
         };
-        sites: { [key in Site]: string };
+        sites: { [key in Site]?: string };
         relations: string[];
         tags: string[];
     }

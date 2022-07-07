@@ -1,6 +1,6 @@
 import {anilistClient} from "./anilist_client";
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
-import {MediaListStatus} from "../types/anilist_api";
+import {MediaFormat, MediaListStatus} from "../types/anilist_api";
 import {bangumiClient} from "./bangumi_client";
 import Scheduler from "./scheduler";
 import {
@@ -167,6 +167,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             // If in manual relation, fetch the entry directly
             let manual_id = manual_relations.find(r => String(r[0]) === bangumiItem.bgm_id);
             if (manual_id && manual_id[1]) {
+                // FIXME: When using manual relation, should not depend on fetching global anime object
                 let gl = await getGlobalAnimeItemByAnilist(String(manual_id[1]));
                 if (gl) {
                     incrementProgressBar();
@@ -179,8 +180,84 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
             }
 
             // Get China anime object
-            const chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
+            let chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id);
             if (!chinaItem) {
+                // TODO: Match future anime
+                // Get China anime object allowing null parameters
+                chinaItem = await getChinaAnimeItem(bangumiItem.bgm_id, false);
+                if (chinaItem) {
+                    const globalItems = await anilistClient.searchAnime(chinaItem.title);
+                    if (globalItems) for (let globalItem of globalItems) {
+                        // Check format
+                        let type: GlobalAnimeData.Type;
+                        switch (globalItem.format) {
+                            case MediaFormat.TV:
+                            case MediaFormat.TV_SHORT:
+                                type = GlobalAnimeData.Type.Tv;
+                                break;
+                            case MediaFormat.OVA:
+                                type = GlobalAnimeData.Type.Ova;
+                                break;
+                            case MediaFormat.MOVIE:
+                                type = GlobalAnimeData.Type.Movie;
+                                break;
+                            case MediaFormat.SPECIAL:
+                                type = GlobalAnimeData.Type.Special;
+                                break;
+                            case MediaFormat.ONA:
+                                type = GlobalAnimeData.Type.Ona;
+                                break;
+                            default:
+                                continue;
+                        }
+
+                        switch (chinaItem.type) {
+                            case ChinaAnimeData.Type.Tv:
+                                if (type !== GlobalAnimeData.Type.Tv) continue;
+                                break;
+                            case ChinaAnimeData.Type.Ova:
+                                if (type !== GlobalAnimeData.Type.Ova && type !== GlobalAnimeData.Type.Special) continue;
+                                break;
+                            case ChinaAnimeData.Type.Movie:
+                                if (type !== GlobalAnimeData.Type.Movie) continue;
+                                break;
+                            case ChinaAnimeData.Type.Web:
+                                if (type !== GlobalAnimeData.Type.Ona) continue;
+                                break;
+                            default:
+                                continue;
+                        }
+
+                        // Check if anime has not aired
+                        const date = new Date();
+                        if ((!globalItem.startDate.year || globalItem.startDate.year >= date.getFullYear()) &&
+                            (!globalItem.startDate.month || globalItem.startDate.month >= date.getMonth() + 1) &&
+                            (!globalItem.startDate.day || globalItem.startDate.day >= date.getDate())) {
+                            let gl:GlobalAnimeData.Item = {
+                                animeSeason: {season: GlobalAnimeData.Season.Undefined},
+                                episodes: 0,
+                                relations: [],
+                                sites: {
+                                    AniList: String(globalItem.id),
+                                    MyAnimeList: String(globalItem.idMal)
+                                },
+                                status: GlobalAnimeData.Status.Upcoming,
+                                synonyms: [],
+                                tags: [],
+                                title: globalItem.title.native,
+                                type
+                            }
+
+                            incrementProgressBar();
+                            result[i] = {
+                                bgm: bangumiItem,
+                                global: gl
+                            };
+                            return;
+                        }
+                    }
+                }
+
                 incrementProgressBar();
                 autoLog(`Cannot construct cn_anime object for bgm=${bangumiItem.bgm_id}.`, "matchEntry", LogLevel.Warn);
                 result[i] = {
