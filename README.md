@@ -1,6 +1,6 @@
 # Bangumi-Sync
 
-中文| [English](README_EN.md)
+> 中文 | [English](README_EN.md)
 
 **一个自动同步所有 Bangumi 动画收视记录到 Anilist 的脚本.**
 
