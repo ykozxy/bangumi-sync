@@ -16,8 +16,9 @@ import {
     stopProgressBar
 } from "./log_util";
 import {GlobalAnimeData} from "../types/global_anime_data";
+import {isServerMode, sleep} from "./util";
 
-const config: Config = require("../../config.json");
+const config: Config = require("../../config/config.json");
 
 class AnilistClient {
     private readonly mainLimiter: RateLimiter;
@@ -467,25 +468,14 @@ class AnilistClient {
     /**
      * Automatically load and check user token. If token is expired, prompt user to login.
      */
-    public async checkToken() {
-        function tokenExists(this: AnilistClient) {
-            return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type
-        }
-
+    public async autoUpdateToken() {
         // Load token from file
-        if (!tokenExists.call(this)) {
-            if (fs.existsSync(config.cache_path + "/anilist_token.json")) {
-                let token = JSON.parse(fs.readFileSync(config.cache_path + "/anilist_token.json", "utf8"));
-                this.token.access_token = token.access_token;
-                this.token.refresh_token = token.refresh_token;
-                this.token.expires_in = new Date(token.expires_in);
-                this.token.token_type = token.token_type;
+        if (!this.tokenExists()) {
+            this.loadToken();
+            // Check if the token doesn't exist
+            if (!this.tokenExists()) {
+                await this.getToken();
             }
-        }
-
-        // Check if the token doesn't exist
-        if (!tokenExists.call(this)) {
-            await this.getToken();
         }
 
         // Refresh the token
@@ -531,6 +521,22 @@ class AnilistClient {
     }
 
     private async getToken() {
+        // Handle server mode
+        if (isServerMode) {
+            autoLog("Anilist token expired. Please run `npm run token` to get new token.", "Anilist", LogLevel.Error);
+            autoLog("Waiting for token...", "Anilist", LogLevel.Info);
+
+            // Wait until token is available
+            while (1) {
+                this.loadToken();
+                if (this.tokenExists() && await this.refreshToken())
+                    break;
+                await sleep(5000);
+            }
+
+            return;
+        }
+
         // Setup callback server
         let code = "";
         const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -609,6 +615,26 @@ class AnilistClient {
             autoLog("Failed to refresh anilist token.", "Anilist", LogLevel.Error);
             autoLogException(e as Error);
             return false;
+        }
+    }
+
+    /**
+     * Check if the token exists.
+     */
+    private tokenExists() {
+        return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type;
+    }
+
+    /**
+     * Load token from file.
+     */
+    private loadToken() {
+        if (fs.existsSync(config.cache_path + "/anilist_token.json")) {
+            let token = JSON.parse(fs.readFileSync(config.cache_path + "/anilist_token.json", "utf8"));
+            this.token.access_token = token.access_token;
+            this.token.refresh_token = token.refresh_token;
+            this.token.expires_in = new Date(token.expires_in);
+            this.token.token_type = token.token_type;
         }
     }
 }

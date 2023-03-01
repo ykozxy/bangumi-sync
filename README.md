@@ -20,51 +20,46 @@ npm i
 
 首次运行时会先从提供的数据源下载动画数据库，由于数据库文件较大，可能需要一段时间。然后，脚本会自动在浏览器中打开 Bangumi 和 Anilist 的授权界面，按提示操作即可。
 
-脚本有两种运行模式，用于手动运行的单次执行模式，和后台常驻并自动定时同步的 server 模式。
+### 单次同步模式
 
-### 单次执行模式
-
-Single 模式中脚本仅会执行单次同步并结束。配置文件内中的 `manual_confirm` 项可用于设置是否在同步更新前手动确认。在终端中执行以下命令来以单次执行模式运行脚本：
+单次执行模式中脚本仅会执行单次同步并结束。配置文件内中的 `manual_confirm` 项可用于设置是否在同步更新前手动确认。在终端中执行以下命令来以单次执行模式运行脚本：
 
 ```bash
 npm start
 ```
 
-### Server 模式
+### Docker 模式
 
-Server 模式依赖于进程管理工具 [pm2](https://pm2.keymetrics.io/)，需先行使用命令 `npm i -g pm2` 安装。
+使用如下命令来构建容器并运行：
 
-在这个模式下，`manual_confirm` 变量会被自动忽略，脚本会以配置文件中的 `server_mode_interval` 项设置的时间间隔（秒）为周期同步，所有的输出会写入以脚本启动时间命名的 log 文件。
-
-在终端中执行以下命令来以 server 模式运行脚本：
-
-```bash
-npm run server:start
+```shell
+docker build -t bangumi-sync .
+docker run -d \
+	--name="bangumi-sync" \
+	-v $(pwd):/app \
+	--restart=unless-stopped bangumi-sync
 ```
 
-想要停止脚本，运行：
+使用 Docker 运行时，`manual_confirm` 变量会被自动忽略，脚本会以配置文件中的 `server_mode_interval` 项设置的时间间隔（秒）为周期同步，所有的输出会写入以脚本启动时间命名的 log 文件。
 
-```bash
-npm run server:stop
+在第一次运行前，需要先执行以下命令来获取两个平台的 token：
+
+```shell
+npm run token
 ```
 
-如果想查看脚本的运行状态，可以使用任一下列命令：
-
-```bash
-pm2 ls
-pm2 describe bangumi-sync
-```
+在 Docker 运行时发生 token 过期或缺失的问题时，也可使用如上命令来刷新 token。
 
 ## 配置
 
-配置文件为 `config.json`，其中可配置内容为：
+配置文件为 `config/config.json`，其中可配置内容为：
 
 | 变量                          | 描述                                             | 可选参数                               |
 |-----------------------------|------------------------------------------------|------------------------------------|
 | `sync_comments`             | 是否同步评论                                         | `true` / `false`                   |
 | `manual_confirm`            | 是否在上传更新前手动确认，`server` 模式中自动关闭                  | `true` / `false`                   |
 | `server_mode_interval`      | 控制 `server` 模式中两次同步的时间间隔（秒）                    | `number`                           |
-| `enable_notifications`      | 是否在 `server` 模式中开启桌面通知（仅失败时）                   | `true` / `false`                   |
+| `enable_notifications`      | *是否在 `server` 模式中开启桌面通知（仅失败时）(不再使用)*           | `true` / `false`                   |
 | `cache_path`                | 缓存路径                                           | 相对路径                               |
 | `log_path`                  | 日志文件路径                                         | 相对路径                               |
 | `log_file_level`            | 日志文件最低输出级别                                     | `debug` / `info`/ `warn` / `error` |
@@ -74,7 +69,7 @@ pm2 describe bangumi-sync
 
 ## 手动条目匹配
 
-因为本项目未能做到 100% 的自动匹配，所以可以通过编辑 `manual_relations.json` 来手动添加条目匹配或编辑 `ignore_entries.json` 来忽略某些条目。
+因为本项目未能做到 100% 的自动匹配，所以可以通过编辑 `config/manual_relations.json` 来手动添加条目匹配或编辑 `config/ignore_entries.json` 来忽略某些条目。
 
 `manual_relation.json` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
 
@@ -98,10 +93,10 @@ pm2 describe bangumi-sync
 
 ## TODO
 
-- [x] Server 模式。
-- [x] Server 模式中的通知推送。
+- [x] Server 模式 (使用 Docker)。
+- [x] Server 模式中的通知推送（在 Docker 中暂时无法使用）。
 - [ ] 从 Anilist 到 bangumi 的双向同步。
-- [ ] UI 界面。
+- [ ] 使用 postgres/mongoDB 等数据库作为后端储存。
 
 ## 数据来源
 

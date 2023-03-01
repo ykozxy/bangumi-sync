@@ -1,0 +1,12 @@
+.git
+.idea
+node_modules
+build
+cache
+log
+asset
+
+Dockerfile*
+.gitignore
+LICENSE
+README*

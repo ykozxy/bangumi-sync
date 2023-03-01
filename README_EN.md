@@ -19,17 +19,11 @@ npm i
 
 <img src="./asset/image-20220522130730661.png" alt="image-20220522130730661" style="zoom: 67%;" />
 
-In the first run, the script will automatically download the anime databases from the provided data sources, which may
-take a while due to the large database file. Then, the authentication pages of Bangumi and Anilist will be opened in
-browser automatically -- just follow the prompts.
-
-There are two ways to run the script: a single execution mode for running manually, and a server mode where the script
-is resident in the background and automatically executed at designated intervals.
+In the first run, the script will automatically download the anime databases from the provided data sources, which may take a while due to the large database file. Then, the authentication pages of Bangumi and Anilist will be opened in browser automatically -- just follow the prompts.
 
 ### Single Execution Mode
 
-In this mode, the script will only perform a single sync then exit. The `manual_confirm` entry in the configuration file
-can be used to set whether to manually confirm before synchronizing updates.
+In this mode, the script will only perform a single sync then exit. The `manual_confirm` entry in the configuration file can be used to set whether to manually confirm before synchronizing updates.
 
 Execute the following commands to run the script in single execution mode:
 
@@ -37,55 +31,49 @@ Execute the following commands to run the script in single execution mode:
 npm start
 ```
 
-### Server Mode
+### Docker Mode
 
-Server mode relies on [pm2](https://pm2.keymetrics.io/), which needs to be installed first with the
-command `npm i -g pm2`.
+Run the following commands to build and run the docker image:
 
-In this mode, the `manual_confirm` field is automatically ignored. The script is executed at the interval set by
-the `server_mode_interval` entry (in seconds) in the configuration file, and all output is written to a log file named
-after the script's starting time.
-
-Execute the following commands to run the script in server mode:
-
-```bash
-npm run server:start
+```shell
+docker build -t bangumi-sync .
+docker run -d \
+	--name="bangumi-sync" \
+	-v $(pwd):/app \
+	--restart=unless-stopped bangumi-sync
 ```
 
-To stop the script, run:
+When hosting with Docker, the `manual_confirm` field is automatically ignored. The script is executed at the interval set by the `server_mode_interval` entry (in seconds) in the configuration file, and all output is written to a log file named after the script's starting time.
 
-```bash
-npm run server:stop
+Before the first run, the following command needs to be executed to get the token:
+
+```shell
+npm run token
 ```
 
-To check the status of the script, any of the following commands can be used:
-
-```bash
-pm2 ls
-pm2 describe bangumi-sync
-```
+You can also use the above command to refresh the token if it expires or is missing while the Docker image is running.
 
 ## Configuration
 
-The configuration file is `config.json`, where the configurable fields are:
+The configuration file is `config/config.json`, where the configurable fields are:
 
-| Field                       | Description                                                  | Parameters                         |
-| --------------------------- | ------------------------------------------------------------ | ---------------------------------- |
-| `sync_comments`             | Whether to synchronize comments.                             | `true` / `false`                   |
+| Field                       | Description                                                                                   | Parameters                         |
+|-----------------------------|-----------------------------------------------------------------------------------------------|------------------------------------|
+| `sync_comments`             | Whether to synchronize comments.                                                              | `true` / `false`                   |
 | `manual_confirm`            | Whether to confirm manually before uploading updates. Automatically `false` in `server` mode. | `true` / `false`                   |
-| `server_mode_interval`      | Controls the time interval (in seconds) between two executions in `server` mode. | `number`                           |
-| `enable_notifications`      | Whether to enable desktop notifications in `server` mode (only on exceptions). | `true` / `false`                   |
-| `cache_path`                | Cache path.                                                  | Relative Path                      |
-| `log_path`                  | Log file path.                                               | Relative Path                      |
-| `log_file_level`            | Minimum output level to log files.                           | `debug` / `info`/ `warn` / `error` |
-| `log_console_level`         | Minimum output level to console.                             | `debug` / `info`/ `warn` / `error` |
-| `global_anime_database_url` | Url to global anime database.                                | url                                |
-| `china_anime_database_url`  | Url to CN anime database.                                    | url                                |
+| `server_mode_interval`      | Controls the time interval (in seconds) between two executions in `server` mode.              | `number`                           |
+| `enable_notifications`      | *Whether to enable desktop notifications in `server` mode (only on exceptions) (deprecated).* | `true` / `false`                   |
+| `cache_path`                | Cache path.                                                                                   | Relative Path                      |
+| `log_path`                  | Log file path.                                                                                | Relative Path                      |
+| `log_file_level`            | Minimum output level to log files.                                                            | `debug` / `info`/ `warn` / `error` |
+| `log_console_level`         | Minimum output level to console.                                                              | `debug` / `info`/ `warn` / `error` |
+| `global_anime_database_url` | Url to global anime database.                                                                 | url                                |
+| `china_anime_database_url`  | Url to CN anime database.                                                                     | url                                |
 
 ## Manual entry matching
 
 Since this project cannot do 100% auto-matching (yet), entries can be manually matched or ignored by
-editing `manual_relations.json` or `ignore_entries.json`.
+editing `config/manual_relations.json` or `config/ignore_entries.json`.
 
 Each item in `manual_relation.json` should be of the form `[bangumi_id, anilist_id]`, representing a forced matching of
 the two entries.
@@ -116,10 +104,10 @@ and [sync_util.ts](src/utils/sync_util.ts).
 
 ## TODO
 
-- [x] Server mode
-- [x] Notification push in Server mode.
+- [x] Server mode (via Docker).
+- [x] Notification push in Server mode (No longer works in Docker mode).
 - [ ] Two-way synchronization from Anilist to bangumi.
-- [ ] GUI interface.
+- [ ] Switch to postgres/mongoDB as backend storage.
 
 ## Data Sources
 

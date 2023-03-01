@@ -6,8 +6,9 @@ import {createServer, IncomingMessage, ServerResponse} from 'http';
 import fs from "fs";
 import open from "open";
 import {autoLog, autoLogException, LogLevel} from "./log_util";
+import {isServerMode, sleep} from "./util";
 
-const config: Config = require("../../config.json");
+const config: Config = require("../../config/config.json");
 
 class BangumiClient {
     private static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();
@@ -51,26 +52,14 @@ class BangumiClient {
     /**
      * Automatically load and check user token. If token is expired, prompt user to login.
      */
-    public async checkToken() {
-        function tokenExists(this: BangumiClient) {
-            return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type && this.token.user_id
-        }
-
+    public async autoUpdateToken() {
         // Load token from file
-        if (!tokenExists.call(this)) {
-            if (fs.existsSync(config.cache_path + "/bangumi_token.json")) {
-                let token = JSON.parse(fs.readFileSync(config.cache_path + "/bangumi_token.json", "utf8"));
-                this.token.access_token = token.access_token;
-                this.token.refresh_token = token.refresh_token;
-                this.token.expires_in = new Date(token.expires_in);
-                this.token.token_type = token.token_type;
-                this.token.user_id = token.user_id;
+        if (!this.tokenExists()) {
+            this.loadToken();
+            // Check if the token doesn't exist
+            if (!this.tokenExists()) {
+                await this.getToken();
             }
-        }
-
-        // Check if the token doesn't exist
-        if (!tokenExists.call(this)) {
-            await this.getToken();
         }
 
         // Refresh the token
@@ -80,17 +69,9 @@ class BangumiClient {
         }
 
         // Check token from site
-        const url = "https://bgm.tv/oauth/token_status";
-        const params = {access_token: this.token.access_token};
-        try {
-            await this.limiter.removeTokens(1);
-            await axios.get(url, {params});
-        } catch (e: any) {
-            if (e.response.status === 401) {
-                await this.getToken();
-            } else {
-                throw e;
-            }
+        if (!await this.checkToken()) {
+            autoLog("Bangumi token expired.", "Bangumi", LogLevel.Error);
+            await this.getToken();
         }
 
         // Save token to file
@@ -208,6 +189,22 @@ class BangumiClient {
      * Prompt the user to get a new token.
      */
     private async getToken(): Promise<void> {
+        // Handle server mode
+        if (isServerMode) {
+            autoLog("Bangumi token expired. Please run `npm run token` to get new token.", "Bangumi", LogLevel.Error);
+            autoLog("Waiting for token...", "Bangumi", LogLevel.Info);
+
+            // Wait until token is available
+            while (1) {
+                this.loadToken();
+                if (this.tokenExists() && await this.refreshToken())
+                    break;
+                await sleep(5000);
+            }
+
+            return;
+        }
+
         // Setup callback server
         let code: string = "";
         const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -289,6 +286,50 @@ class BangumiClient {
             autoLog(`Failed to refresh bangumi token.`, "Bangumi", LogLevel.Error);
             autoLogException(e as Error);
             return false;
+        }
+    }
+
+    /**
+     * Check if the token exists.
+     */
+    private tokenExists() {
+        return this.token.access_token && this.token.refresh_token && this.token.expires_in && this.token.token_type && this.token.user_id;
+    }
+
+    /**
+     * Check if the token is valid.
+     */
+    private async checkToken() {
+        if (!this.tokenExists()) {
+            return false;
+        }
+
+        const url = "https://bgm.tv/oauth/token_status";
+        const params = {access_token: this.token.access_token};
+        try {
+            await this.limiter.removeTokens(1);
+            await axios.get(url, {params});
+        } catch (e: any) {
+            if (e.response.status === 401) {
+                return false;
+            } else {
+                throw e;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Load token from file.
+     */
+    private loadToken() {
+        if (fs.existsSync(config.cache_path + "/bangumi_token.json")) {
+            let token = JSON.parse(fs.readFileSync(config.cache_path + "/bangumi_token.json", "utf8"));
+            this.token.access_token = token.access_token;
+            this.token.refresh_token = token.refresh_token;
+            this.token.expires_in = new Date(token.expires_in);
+            this.token.token_type = token.token_type;
+            this.token.user_id = token.user_id;
         }
     }
 }

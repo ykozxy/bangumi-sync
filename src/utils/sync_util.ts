@@ -22,7 +22,7 @@ import {Config} from "../types/config";
 import {ChinaAnimeData} from "../types/china_anime_data";
 import {GlobalAnimeData} from "../types/global_anime_data";
 
-const config: Config = require("../../config.json");
+const config: Config = require("../../config/config.json");
 
 
 /**

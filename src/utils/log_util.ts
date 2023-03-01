@@ -2,8 +2,9 @@ import cliProgress, {MultiBar, SingleBar} from "cli-progress";
 import chalk from "chalk";
 import fs from "fs";
 import {Config} from "../types/config";
+import {isServerMode} from "./util";
 
-const config: Config = require("../../config.json");
+const config: Config = require("../../config/config.json");
 
 let multiBar: MultiBar | null;
 let progressBar: SingleBar | null;
@@ -23,6 +24,8 @@ export enum LogLevel {
  * @param total The total number of items to process.
  */
 export function createProgressBar(total: number) {
+    if (isServerMode) return;
+
     if (progressBar || multiBar) {
         autoLog("Trying to overwrite existing progress bar", "createProgressBar", LogLevel.Warn);
         multiBar?.stop();
@@ -44,6 +47,8 @@ export function createProgressBar(total: number) {
  * @param amount The amount to increment the progress bar by.
  */
 export function incrementProgressBar(amount: number = 1) {
+    if (isServerMode) return;
+
     if (progressBar && multiBar) {
         progressBar.increment(amount);
         multiBar.update();
@@ -56,6 +61,8 @@ export function incrementProgressBar(amount: number = 1) {
  * Stop the progress bar.
  */
 export function stopProgressBar() {
+    if (isServerMode) return;
+
     if (multiBar && progressBar) {
         progressBar.stop();
         multiBar.stop();

@@ -12,18 +12,15 @@ import * as readline from "readline";
 import {Config} from "./types/config";
 import {autoLog, autoLogException} from "./utils/log_util";
 import {notify} from "node-notifier";
+import {isServerMode, sleep} from "./utils/util";
 
-const config: Config = require("../config.json");
-
-function sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+const config: Config = require("../config/config.json");
 
 async function singleMode(userConfirm: boolean) {
     autoLog("Initializing...", "Main")
     await buildDatabase();
-    await bangumiClient.checkToken();
-    await anilistClient.checkToken();
+    await bangumiClient.autoUpdateToken();
+    await anilistClient.autoUpdateToken();
     autoLog("Finished.", "Main")
     await sleep(200);
 
@@ -88,8 +85,8 @@ async function serverMode() {
 
     // Setup token auto-refresh every hour
     const refreshToken = async () => {
-        await bangumiClient.checkToken();
-        await anilistClient.checkToken();
+        await bangumiClient.autoUpdateToken();
+        await anilistClient.autoUpdateToken();
         setTimeout(refreshToken, 60 * 60 * 1000);
     };
     await refreshToken();
@@ -143,14 +140,7 @@ async function serverMode() {
     }
 }
 
-
-// async function debug() {
-//     await buildDatabase();
-//     console.log(getGlobalAnimeItemByAnilist("151384"));
-// }
-// debug().then(r => process.exit(0));
-
-if (process.argv[2] === "--server") {
+if (isServerMode) {
     autoLog("Running in server mode.", "Main");
     serverMode().then(() => {
         process.exit(0);
