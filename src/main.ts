@@ -9,12 +9,10 @@ import {
     renderDiff
 } from "./utils/sync_util";
 import * as readline from "readline";
-import {Config} from "./types/config";
 import {autoLog, autoLogException} from "./utils/log_util";
 import {notify} from "node-notifier";
 import {isServerMode, sleep} from "./utils/util";
-
-const config: Config = require("../config/config.json");
+import {config, reloadConfig} from "./utils/config_util";
 
 async function singleMode(userConfirm: boolean) {
     autoLog("Initializing...", "Main")
@@ -93,6 +91,9 @@ async function serverMode() {
 
     /* Main loop */
     while (1) {
+        autoLog("Loading config...", "Main");
+        reloadConfig();
+
         autoLog("Building database...", "Main");
         await buildDatabase();
 

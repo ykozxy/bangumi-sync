@@ -1,10 +1,8 @@
 import cliProgress, {MultiBar, SingleBar} from "cli-progress";
 import chalk from "chalk";
 import fs from "fs";
-import {Config} from "../types/config";
 import {isServerMode} from "./util";
-
-const config: Config = require("../../config/config.json");
+import {config} from "./config_util";
 
 let multiBar: MultiBar | null;
 let progressBar: SingleBar | null;

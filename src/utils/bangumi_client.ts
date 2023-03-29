@@ -1,14 +1,12 @@
 import {BangumiComponents, BangumiOperations} from "../types/bangumi_api";
 import axios from "axios";
 import {RateLimiter} from "limiter";
-import {Config} from "../types/config";
 import {createServer, IncomingMessage, ServerResponse} from 'http';
 import fs from "fs";
 import open from "open";
 import {autoLog, autoLogException, LogLevel} from "./log_util";
 import {isServerMode, sleep} from "./util";
-
-const config: Config = require("../../config/config.json");
+import {config} from "./config_util";
 
 class BangumiClient {
     private static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();

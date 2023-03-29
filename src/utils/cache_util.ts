@@ -1,8 +1,6 @@
 import fs from "fs";
 import {Cache, EtagType} from "../types/cache";
-import {Config} from "../types/config";
-
-const config: Config = require("../../config/config.json");
+import {config} from "./config_util";
 
 // Check cache path and files
 if (!fs.existsSync(config.cache_path)) {

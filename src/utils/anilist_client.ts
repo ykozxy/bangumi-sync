@@ -2,7 +2,6 @@ import {RateLimiter} from "limiter";
 import axios from "axios";
 import {createServer, IncomingMessage, ServerResponse} from "http";
 import fs from "fs";
-import {Config} from "../types/config";
 import {Media, MediaFormat, MediaList, MediaListStatus} from "../types/anilist_api";
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {getAnilistId, getGlobalAnimeItemByMal} from "./data_util";
@@ -17,8 +16,7 @@ import {
 } from "./log_util";
 import {GlobalAnimeData} from "../types/global_anime_data";
 import {isServerMode, sleep} from "./util";
-
-const config: Config = require("../../config/config.json");
+import {config} from "./config_util";
 
 class AnilistClient {
     private readonly mainLimiter: RateLimiter;

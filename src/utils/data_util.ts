@@ -3,22 +3,17 @@ import fs from "fs";
 import stringSimilarity from "string-similarity";
 import {ChinaAnimeData} from "../types/china_anime_data";
 import {GlobalAnimeData} from "../types/global_anime_data";
-import {Config, IgnoreEntries, ManualRelations} from "../types/config";
 import {EtagType, Relation} from "../types/cache";
 import {getEtagCache, setEtagCache} from "./cache_util";
 import {bangumiClient} from "./bangumi_client";
 import {autoLog, autoLogException, LogLevel} from "./log_util";
-
-const config: Config = require("../../config/config.json");
+import {config} from "./config_util";
 
 let china_anime_data: ChinaAnimeData.Item[];
 let global_anime_data: GlobalAnimeData.Item[];
 const bgm_id_map: Map<string, ChinaAnimeData.Item> = new Map();
 const mal_id_map: Map<string, GlobalAnimeData.Item[]> = new Map();
 let known_relations: Relation[] = [];
-
-export const manual_relations: ManualRelations = require("../../config/manual_relations.json");
-export const ignore_entries: IgnoreEntries = require("../../config/ignore_entries.json");
 
 /**
  * @description Load anime data from local cache, and update cache if new data is available.

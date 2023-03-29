@@ -10,20 +10,15 @@ import {
     getChinaAnimeItem,
     getGlobalAnimeItemByAnilist,
     getGlobalAnimeItemByMal,
-    ignore_entries,
-    manual_relations,
     matchChinaToGlobal,
     matchGlobalToChina
 } from "./data_util";
 import stringSimilarity from "string-similarity";
 import {autoLog, createProgressBar, incrementProgressBar, LogLevel, stopProgressBar} from "./log_util";
 import {notify} from "node-notifier";
-import {Config} from "../types/config";
 import {ChinaAnimeData} from "../types/china_anime_data";
 import {GlobalAnimeData} from "../types/global_anime_data";
-
-const config: Config = require("../../config/config.json");
-
+import {config, ignore_entries, manual_relations} from "./config_util";
 
 /**
  * @description Fetch user's Anilist collections
@@ -233,7 +228,7 @@ export async function fillBangumiCollection(bangumiCollection: AnimeCollection[]
                         if ((!globalItem.startDate.year || globalItem.startDate.year >= date.getFullYear()) &&
                             (!globalItem.startDate.month || globalItem.startDate.month >= date.getMonth() + 1) &&
                             (!globalItem.startDate.day || globalItem.startDate.day >= date.getDate())) {
-                            let gl:GlobalAnimeData.Item = {
+                            let gl: GlobalAnimeData.Item = {
                                 animeSeason: {season: GlobalAnimeData.Season.Undefined},
                                 episodes: 0,
                                 relations: [],
