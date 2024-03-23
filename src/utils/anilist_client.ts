@@ -36,7 +36,7 @@ class AnilistClient {
 
     constructor() {
         this.mainLimiter = new RateLimiter({
-            tokensPerInterval: 80,
+            tokensPerInterval: 50,
             interval: 60 * 1000
         });
         this.perTokenLimiter = new RateLimiter({
