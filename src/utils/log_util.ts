@@ -130,11 +130,11 @@ export function autoLog(message: string, tag: string = "", level: LogLevel = Log
  * @param tag The tag to log the error under.
  */
 export function autoLogException(e: Error, tag: string = "") {
-    autoLog(e.message, tag, LogLevel.Error, false);
+    autoLog(e.message, tag, LogLevel.Error);
     // Separate stack trace by line breaks, and print each line separately.
     if (e.stack) {
         e.stack.split("\n").forEach((line) => {
-            autoLog(line, tag, LogLevel.Error, false);
+            autoLog(line, tag, LogLevel.Error);
         });
     }
 }
