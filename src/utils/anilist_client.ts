@@ -36,7 +36,7 @@ class AnilistClient {
 
     constructor() {
         this.mainLimiter = new RateLimiter({
-            tokensPerInterval: 50,
+            tokensPerInterval: 30,
             interval: 60 * 1000
         });
         this.perTokenLimiter = new RateLimiter({
@@ -436,32 +436,36 @@ class AnilistClient {
      * @param retries The number of retries in case of failure.
      * @param delay The initial delay for retries.
      */
-    public async query(query: string, variables: any = {}, retries: number = 5, delay: number = 250): Promise<any> {
+    public async query(query: string, variables: any = {}, retries: number = 7, delay: number = 1000): Promise<any> {
         await this.perTokenLimiter.removeTokens(1);
         await this.mainLimiter.removeTokens(1);
 
+        let response;
         try {
-            const response = await axios.post(this.api_url, JSON.stringify({
+            response = await axios.post(this.api_url, JSON.stringify({
                 query,
                 variables
             }), {headers: this.headers});
 
             // Handle rate limit
-            let requestRemain = Number(response.headers['x-ratelimit-remaining']);
+            let requestRemain = Number(response.headers['x-ratelimit-remaining']) || 0;
             let limiterRemain = this.mainLimiter.getTokensRemaining();
             if (requestRemain < limiterRemain) {
                 await this.mainLimiter.removeTokens(limiterRemain - requestRemain);
             }
             return response.data.data;
         } catch (error: any) {
+            // Log error info
+            autoLog(`Network error when querying. Error: ${error as Error}`, "Anilist.query", LogLevel.Error);
+            autoLog(`Response header: ${JSON.stringify(response?.headers)}, data: ${JSON.stringify(response?.data)}`, "Anilist.query", LogLevel.Info);
+
             if (retries > 0) {
                 const nextDelay = delay * 2;
-                autoLog(`Network error when querying. Retrying in ${delay}ms...`, "Anilist.query", LogLevel.Error);
+                autoLog(`Next retrying in ${delay}ms... (retries left = ${retries - 1})`, "Anilist.query", LogLevel.Error);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 return await this.query(query, variables, retries - 1, nextDelay);
             } else {
-                autoLog(`Network error when querying. No more retries left.`, "Anilist.query", LogLevel.Error);
-                autoLogException(error as Error);
+                autoLog(`No more retries left.`, "Anilist.query", LogLevel.Error);
                 return null;
             }
         }
