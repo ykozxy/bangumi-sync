@@ -9,7 +9,10 @@ import {isServerMode, sleep} from "./util";
 import {config} from "./config_util";
 
 class BangumiClient {
-    private static subjectCache: Map<string, { data: BangumiComponents["schemas"]["Subject"], expire: Date }> = new Map();
+    private static subjectCache: Map<string, {
+        data: BangumiComponents["schemas"]["Subject"],
+        expire: Date
+    }> = new Map();
     private readonly limiter: RateLimiter;
     private readonly api_url: string = "https://api.bgm.tv";
     private readonly token = {
@@ -97,9 +100,10 @@ class BangumiClient {
     /**
      * Get subject by id.
      * @param bgm_id Subject id.
-     * @param retry Whether to retry if failed.
+     * @param retries The number of retry attempts made.
+     * @param delay The delay between retries in milliseconds.
      */
-    public async getSubjectById(bgm_id: string, retry: boolean = true): Promise<BangumiComponents["schemas"]["Subject"] | null> {
+    public async getSubjectById(bgm_id: string, retries: number = 5, delay: number = 250): Promise<BangumiComponents["schemas"]["Subject"] | null> {
         // Check cache
         let cache = BangumiClient.subjectCache.get(bgm_id);
         if (cache) {
@@ -118,10 +122,10 @@ class BangumiClient {
             autoLog(`Network error when fetching subject ${bgm_id}`, "Bangumi", LogLevel.Error);
             autoLogException(e as Error);
 
-            if (retry) {
-                await setTimeout(() => {
-                }, 1000);
-                return await this.getSubjectById(bgm_id, false);
+            if (retries > 0) {
+                autoLog(`Retrying to fetch subject ${bgm_id} in ${delay}ms...`, "Bangumi", LogLevel.Error);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return await this.getSubjectById(bgm_id, retries - 1, delay * 2);
             }
             return null;
         }
@@ -130,8 +134,10 @@ class BangumiClient {
     /**
      * Search anime by title
      * @param title Title to search.
+     * @param retries The number of retry attempts made.
+     * @param delay The delay between retries in milliseconds.
      */
-    public async searchAnime(title: string): Promise<BangumiComponents["schemas"]["SubjectSmall"][]> {
+    public async searchAnime(title: string, retries: number = 5, delay: number = 250): Promise<BangumiComponents["schemas"]["SubjectSmall"][]> {
         await this.limiter.removeTokens(1);
         const url = this.api_url + `/search/subject/${encodeURIComponent(title)}`;
         let query: BangumiOperations["searchSubjectByKeywords"]["parameters"]["query"] = {
@@ -144,6 +150,12 @@ class BangumiClient {
         } catch (e) {
             autoLog(`Network error when searching anime ${title}`, "Bangumi", LogLevel.Error);
             autoLogException(e as Error);
+
+            if (retries > 0) {
+                autoLog(`Retrying to search anime ${title} in ${delay}ms...`, "Bangumi", LogLevel.Error);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return await this.searchAnime(title, retries - 1, delay * 2);
+            }
             return [];
         }
     }
