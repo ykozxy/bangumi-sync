@@ -67,7 +67,7 @@ export namespace GlobalAnimeData {
                     acc["AnimePlanet"] = res[1];
                 } else if ((res = site.match(/anisearch.com\/anime\/(\d+)$/)) && res[1]) {
                     acc["AnimeSearch"] = res[1];
-                } else if ((res = site.match(/kitsu.io\/anime\/(\d+)$/)) && res[1]) {
+                } else if ((res = site.match(/kitsu.(app|io)\/anime\/(\d+)$/)) && res[1]) {
                     acc["Kitsu"] = res[1];
                 } else if ((res = site.match(/livechart.me\/anime\/(\d+)$/)) && res[1]) {
                     acc["LiveChart"] = res[1];
