@@ -43,12 +43,14 @@ export namespace GlobalAnimeData {
     enum Site {
         AniDB = "AniDB",
         AniList = "AniList",
+        AnimeCountdown = "AnimeCountdown",
         AnimePlanet = "AnimePlanet",
         AnimeSearch = "AnimeSearch",
         Kitsu = "Kitsu",
         LiveChart = "LiveChart",
         MyAnimeList = "MyAnimeList",
         NotifyMoe = "NotifyMoe",
+        Simkl = "Simkl",
     }
 
     export function loadData(json: any): Item[] {
@@ -63,6 +65,8 @@ export namespace GlobalAnimeData {
                     acc["AniDB"] = res[1];
                 } else if ((res = site.match(/anilist.co\/anime\/(\d+)$/)) && res[1]) {
                     acc["AniList"] = res[1];
+                } else if ((res = site.match(/animecountdown.com\/(\d+)$/)) && res[1]) {
+                    acc["AnimeCountdown"] = res[1];
                 } else if ((res = site.match(/anime-planet.com\/anime\/(.+)$/)) && res[1]) {
                     acc["AnimePlanet"] = res[1];
                 } else if ((res = site.match(/anisearch.com\/anime\/(\d+)$/)) && res[1]) {
@@ -75,6 +79,8 @@ export namespace GlobalAnimeData {
                     acc["MyAnimeList"] = res[1];
                 } else if ((res = site.match(/notify.moe\/anime\/(.+)$/)) && res[1]) {
                     acc["NotifyMoe"] = res[1];
+                } else if ((res = site.match(/simkl.com\/anime\/(\d+)$/)) && res[1]) {
+                    acc["Simkl"] = res[1];
                 } else {
                     autoLog(`Cannot parse ${site} when processing ${item.title}`, "loadGlobalAnimeData", LogLevel.Error);
                 }
