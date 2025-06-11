@@ -532,6 +532,44 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
     return result;
 }
 
+export async function generateBidirectionalChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean): Promise<{ before?: AnimeCollection, after: AnimeCollection, to: 'bangumi' | 'anilist' }[]> {
+    const result: { before?: AnimeCollection, after: AnimeCollection, to: 'bangumi' | 'anilist' }[] = [];
+
+    const matched = new Set<AnimeCollection>();
+
+    for (const bangumi of bangumiCollection) {
+        if (!bangumi.mal_id && !bangumi.anilist_id) continue;
+        const anilist = anilistCollection.find(col => (bangumi.anilist_id ? col.anilist_id === bangumi.anilist_id : col.mal_id === bangumi.mal_id));
+        if (!anilist) {
+            result.push({ after: bangumi, to: 'anilist' });
+            continue;
+        }
+
+        matched.add(anilist);
+
+        // Sync ids
+        bangumi.mal_id = anilist.mal_id;
+        bangumi.anilist_id = anilist.anilist_id;
+        anilist.bgm_id = bangumi.bgm_id;
+
+        // Determine newer entry
+        const newerBangumi = bangumi.update_time > anilist.update_time;
+        const source = newerBangumi ? bangumi : anilist;
+        const target = newerBangumi ? anilist : bangumi;
+
+        if (source.score !== target.score || source.status !== target.status || source.watched_episodes !== target.watched_episodes || (syncComment && source.comments !== target.comments)) {
+            result.push({ before: target, after: source, to: newerBangumi ? 'anilist' : 'bangumi' });
+        }
+    }
+
+    for (const ani of anilistCollection) {
+        if (matched.has(ani)) continue;
+        result.push({ after: ani, to: 'bangumi' });
+    }
+
+    return result;
+}
+
 /**
  * @description Pretty format changelog
  * @param before Collection before changes

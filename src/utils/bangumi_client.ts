@@ -4,9 +4,10 @@ import {RateLimiter} from "limiter";
 import {createServer, IncomingMessage, ServerResponse} from 'http';
 import fs from "fs";
 import open from "open";
-import {autoLog, autoLogException, LogLevel} from "./log_util";
+import {autoLog, autoLogException, LogLevel, createProgressBar, incrementProgressBar, stopProgressBar} from "./log_util";
 import {isServerMode, sleep} from "./util";
 import {config} from "./config_util";
+import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 
 class BangumiClient {
     private static subjectCache: Map<string, {
@@ -193,6 +194,75 @@ class BangumiClient {
             collections = collections.concat(data.data as BangumiComponents["schemas"]["UserCollection"][]);
         }
         return collections;
+    }
+
+    private static convertStatus(status: CollectionStatus): BangumiComponents["schemas"]["CollectionStatusType"] {
+        switch (status) {
+            case CollectionStatus.Watching:
+                return "do";
+            case CollectionStatus.Completed:
+                return "collect";
+            case CollectionStatus.OnHold:
+                return "on_hold";
+            case CollectionStatus.Dropped:
+                return "dropped";
+            case CollectionStatus.PlanToWatch:
+            default:
+                return "wish";
+        }
+    }
+
+    /**
+     * Save or update a collection entry on Bangumi.
+     * @param collection New collection entry
+     * @param syncComment Whether to sync comments
+     */
+    public async saveEntry(collection: AnimeCollection, syncComment: boolean = false): Promise<boolean> {
+        if (!collection.bgm_id) {
+            autoLog(`Failed to save ${collection.title} (anilist=${collection.anilist_id}), empty bgm id.`, "Bangumi.saveEntry", LogLevel.Error);
+            return false;
+        }
+
+        const status = BangumiClient.convertStatus(collection.status);
+
+        try {
+            await this.limiter.removeTokens(1);
+            const epUrl = this.api_url + `/subject/${collection.bgm_id}/update/watched_eps`;
+            await axios.post(epUrl, null, {
+                params: {watched_eps: collection.watched_episodes},
+                headers: this.headers,
+            });
+
+            await this.limiter.removeTokens(1);
+            const colUrl = this.api_url + `/collection/${collection.bgm_id}/update`;
+            const body = new URLSearchParams({
+                status,
+                rating: String(collection.score),
+            });
+            if (syncComment && collection.comments) body.append('comment', collection.comments);
+            await axios.post(colUrl, body, {
+                headers: {
+                    ...this.headers,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            });
+            return true;
+        } catch (e: any) {
+            autoLog(`Failed to update collection for bgm=${collection.bgm_id}.`, "Bangumi.saveEntry", LogLevel.Error);
+            autoLogException(e as Error);
+            return false;
+        }
+    }
+
+    public async smartUpdateCollection(collection: AnimeCollection[], syncComment: boolean = false): Promise<number> {
+        let successCount = 0;
+        createProgressBar(collection.length);
+        for (const c of collection) {
+            if (await this.saveEntry(c, syncComment)) successCount++;
+            incrementProgressBar();
+        }
+        stopProgressBar();
+        return successCount;
     }
 
     /**

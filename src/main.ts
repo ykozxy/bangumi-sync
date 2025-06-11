@@ -3,7 +3,9 @@ import {bangumiClient} from "./utils/bangumi_client";
 import {anilistClient} from "./utils/anilist_client";
 import {
     fillBangumiCollection,
+    fillAnilistCollection,
     generateChangelog,
+    generateBidirectionalChangelog,
     getAnilistCollections,
     getBangumiCollections,
     renderDiff
@@ -13,6 +15,9 @@ import {autoLog, autoLogException} from "./utils/log_util";
 import {notify} from "node-notifier";
 import {isServerMode, sleep} from "./utils/util";
 import {config, reloadConfig} from "./utils/config_util";
+
+const backwardMode = process.argv.includes("--backward");
+const bothMode = process.argv.includes("--both");
 
 async function singleMode(userConfirm: boolean) {
     autoLog("Initializing...", "Main")
@@ -31,11 +36,21 @@ async function singleMode(userConfirm: boolean) {
 
     autoLog("Matching collections...", "Main");
     bangumiCollection = await fillBangumiCollection(bangumiCollection);
+    if (backwardMode || bothMode) {
+        anilistCollection = await fillAnilistCollection(anilistCollection);
+    }
     autoLog("Finished.", "Main");
     await sleep(200);
 
     autoLog("Generating changelog...", "Main");
-    let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+    let changeLog: any[];
+    if (bothMode) {
+        changeLog = await generateBidirectionalChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+    } else if (backwardMode) {
+        changeLog = await generateChangelog(anilistCollection, bangumiCollection, config.sync_comments);
+    } else {
+        changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+    }
     for (let change of changeLog) {
         let name = "";
         if (change.after.bgm_id) {
@@ -46,7 +61,8 @@ async function singleMode(userConfirm: boolean) {
             })
         }
         if (!name) name = <string>change.after.bgm_id;
-        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
+        const direction = bothMode ? ` -> ${change.to}` : (backwardMode ? ' -> bangumi' : ' -> anilist');
+        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id})${direction}:`, "RenderDiff");
         autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
     }
     autoLog(`${changeLog.length} changes.`, "Main");
@@ -67,13 +83,35 @@ async function singleMode(userConfirm: boolean) {
             });
         });
         if (confirm) {
-            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
-            autoLog(`${successCount} changes successfully applied.`, "Main");
+            if (bothMode) {
+                const aniChanges = changeLog.filter(c => c.to === 'anilist').map(c => c.after);
+                const bgmChanges = changeLog.filter(c => c.to === 'bangumi').map(c => c.after);
+                let successAni = await anilistClient.smartUpdateCollection(aniChanges, config.sync_comments);
+                let successBgm = await bangumiClient.smartUpdateCollection(bgmChanges, config.sync_comments);
+                autoLog(`${successAni} anilist and ${successBgm} bangumi changes applied.`, "Main");
+            } else if (backwardMode) {
+                let successCount = await bangumiClient.smartUpdateCollection(changeLog.map(c => c.after), config.sync_comments);
+                autoLog(`${successCount} changes successfully applied to Bangumi.`, "Main");
+            } else {
+                let successCount = await anilistClient.smartUpdateCollection(changeLog.map(c => c.after), config.sync_comments);
+                autoLog(`${successCount} changes successfully applied.`, "Main");
+            }
         }
     } else {
         await sleep(200);
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after, config.sync_comments));
-        autoLog(`${successCount} changes successfully applied.`, "Main");
+        if (bothMode) {
+            const aniChanges = changeLog.filter(c => c.to === 'anilist').map(c => c.after);
+            const bgmChanges = changeLog.filter(c => c.to === 'bangumi').map(c => c.after);
+            let successAni = await anilistClient.smartUpdateCollection(aniChanges, config.sync_comments);
+            let successBgm = await bangumiClient.smartUpdateCollection(bgmChanges, config.sync_comments);
+            autoLog(`${successAni} anilist and ${successBgm} bangumi changes applied.`, "Main");
+        } else if (backwardMode) {
+            let successCount = await bangumiClient.smartUpdateCollection(changeLog.map(c => c.after), config.sync_comments);
+            autoLog(`${successCount} changes successfully applied to Bangumi.`, "Main");
+        } else {
+            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
+            autoLog(`${successCount} changes successfully applied.`, "Main");
+        }
     }
 }
 
@@ -104,9 +142,19 @@ async function serverMode() {
 
         autoLog("Matching collections...", "Main");
         bangumiCollection = await fillBangumiCollection(bangumiCollection);
+        if (backwardMode || bothMode) {
+            anilistCollection = await fillAnilistCollection(anilistCollection);
+        }
 
         autoLog("Generating changelog...", "Main");
-        let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+        let changeLog: any[];
+        if (bothMode) {
+            changeLog = await generateBidirectionalChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+        } else if (backwardMode) {
+            changeLog = await generateChangelog(anilistCollection, bangumiCollection, config.sync_comments);
+        } else {
+            changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+        }
 
         for (let change of changeLog) {
             let name = "";
@@ -118,13 +166,29 @@ async function serverMode() {
                 })
             }
             if (!name) name = <string>change.after.bgm_id;
-            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
+            const direction = bothMode ? ` -> ${change.to}` : (backwardMode ? ' -> bangumi' : ' -> anilist');
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id})${direction}:`, "RenderDiff");
             autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
         }
 
-        autoLog("Updating Anilist collections...", "Main");
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
-        autoLog(`${successCount} changes successfully applied.`, "Main");
+        autoLog("Updating collections...", "Main");
+        let successCount = 0;
+        if (bothMode) {
+            const aniChanges = changeLog.filter(c => c.to === 'anilist').map(c => c.after);
+            const bgmChanges = changeLog.filter(c => c.to === 'bangumi').map(c => c.after);
+            let successAni = await anilistClient.smartUpdateCollection(aniChanges, config.sync_comments);
+            let successBgm = await bangumiClient.smartUpdateCollection(bgmChanges, config.sync_comments);
+            autoLog(`${successAni} anilist and ${successBgm} bangumi changes applied.`, "Main");
+            successCount = successAni + successBgm;
+        } else if (backwardMode) {
+            let success = await bangumiClient.smartUpdateCollection(changeLog.map(c => c.after), config.sync_comments);
+            autoLog(`${success} changes successfully applied to Bangumi.`, "Main");
+            successCount = success;
+        } else {
+            let success = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
+            autoLog(`${success} changes successfully applied.`, "Main");
+            successCount = success;
+        }
 
         if (successCount != changeLog.length && config.enable_notifications) {
             notify({
