@@ -31,6 +31,11 @@ Execute the following commands to run the script in single execution mode:
 npm start
 ```
 
+Additional command line flags:
+
+* `--backward` - Sync changes from Anilist back to Bangumi.
+* `--both` - Detect the newer entry between the two platforms and update the other accordingly.
+
 ### Docker Mode
 
 Run the following commands to build and run the docker image:
@@ -106,7 +111,7 @@ and [sync_util.ts](src/utils/sync_util.ts).
 
 - [x] Server mode (via Docker).
 - [x] Notification push in Server mode (No longer works in Docker mode).
-- [ ] Two-way synchronization from Anilist to bangumi.
+- [x] Two-way synchronization from Anilist to bangumi.
 - [ ] Switch to postgres/mongoDB as backend storage.
 
 ## Data Sources

@@ -28,6 +28,11 @@ npm i
 npm start
 ```
 
+额外的命令行参数：
+
+* `--backward` - 从 Anilist 同步更新回 Bangumi。
+* `--both` - 比较两个平台的更新时间，将较新的条目同步到另一端。
+
 ### Docker 模式
 
 使用如下命令来构建容器并运行：
@@ -95,7 +100,7 @@ npm run token
 
 - [x] Server 模式 (使用 Docker)。
 - [x] Server 模式中的通知推送（在 Docker 中暂时无法使用）。
-- [ ] 从 Anilist 到 bangumi 的双向同步。
+- [x] 从 Anilist 到 bangumi 的双向同步。
 - [ ] 使用 postgres/mongoDB 等数据库作为后端储存。
 
 ## 数据来源
