@@ -44,6 +44,7 @@ export namespace GlobalAnimeData {
         AniDB = "AniDB",
         AniList = "AniList",
         AnimeCountdown = "AnimeCountdown",
+        AnimeNewsNetwork = "AnimeNewsNetwork",
         AnimePlanet = "AnimePlanet",
         AnimeSearch = "AnimeSearch",
         Kitsu = "Kitsu",
@@ -67,6 +68,8 @@ export namespace GlobalAnimeData {
                     acc["AniList"] = res[1];
                 } else if ((res = site.match(/animecountdown.com\/(\d+)$/)) && res[1]) {
                     acc["AnimeCountdown"] = res[1];
+                } else if ((res = site.match(/animenewsnetwork.com\/encyclopedia\/anime.php\?id=(\d+)$/)) && res[1]) {
+                    acc["AnimeNewsNetwork"] = res[1];
                 } else if ((res = site.match(/anime-planet.com\/anime\/(.+)$/)) && res[1]) {
                     acc["AnimePlanet"] = res[1];
                 } else if ((res = site.match(/anisearch.com\/anime\/(\d+)$/)) && res[1]) {
