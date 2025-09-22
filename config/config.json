@@ -7,6 +7,6 @@
   "log_path": "./log/",
   "log_file_level": "info",
   "log_console_level": "info",
-  "global_anime_database_url": "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database-minified.json",
+  "global_anime_database_url": "https://github.com/manami-project/anime-offline-database/releases/download/latest/anime-offline-database-minified.json",
   "china_anime_database_url": "https://cdn.jsdelivr.net/npm/bangumi-data/dist/data.json"
 }
