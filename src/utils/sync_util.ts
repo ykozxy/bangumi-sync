@@ -64,6 +64,11 @@ export async function getAnilistCollections(): Promise<AnimeCollection[]> {
         if (ignore_entries.anilist.includes(mediaList.media.id)) continue;
         if (ignore_entries.mal.includes(mediaList.media.idMal)) continue;
 
+        let completed_at: Date | undefined;
+        if (mediaList.completedAt.year && mediaList.completedAt.month && mediaList.completedAt.day) {
+            completed_at = new Date(mediaList.completedAt.year, mediaList.completedAt.month - 1, mediaList.completedAt.day);
+        }
+
         res.push({
             title: mediaList.media.title.native,
             comments: mediaList.notes,
@@ -72,6 +77,7 @@ export async function getAnilistCollections(): Promise<AnimeCollection[]> {
             score: mediaList.score,
             status,
             update_time,
+            completed_at,
             watched_episodes: mediaList.progress,
         });
     }
@@ -119,6 +125,7 @@ export async function getBangumiCollections(): Promise<AnimeCollection[]> {
             score: entry.rate,
             status,
             update_time: new Date(entry.updated_at),
+            completed_at: status === CollectionStatus.Completed ? new Date(entry.updated_at) : undefined,
             watched_episodes: entry.ep_status,
         });
     }
@@ -519,7 +526,11 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
         }
 
         // Compare entries for changes
-        if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes) {
+        let hasCompletedAtChange = bangumi.status === CollectionStatus.Completed
+            && bangumi.completed_at
+            && (!anilist.completed_at
+                || bangumi.completed_at.toDateString() !== anilist.completed_at.toDateString());
+        if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes || hasCompletedAtChange) {
             result.push({
                 before: anilist,
                 after: bangumi,
@@ -558,6 +569,17 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     }
     if (!before || before.watched_episodes != after.watched_episodes) {
         results.push(`Watched episodes: ${before ? before.watched_episodes : 'NA'} -> ${after.watched_episodes}`);
+    }
+    if (after.status === CollectionStatus.Completed && after.completed_at) {
+        const afterDate = after.completed_at.toISOString().split('T')[0];
+        if (!before || !before.completed_at) {
+            results.push(`Completed at: NA -> ${afterDate}`);
+        } else {
+            const beforeDate = before.completed_at.toISOString().split('T')[0];
+            if (beforeDate !== afterDate) {
+                results.push(`Completed at: ${beforeDate} -> ${afterDate}`);
+            }
+        }
     }
     if (syncComment) {
         if (before && before.comments != after.comments) {

@@ -170,13 +170,16 @@ class AnilistClient {
         createProgressBar(collection.length);
         let successCount = 0;
 
-        // Group collections with same status, score, progress, and comments together.
+        // Group collections with same status, score, progress, comments, and completedAt together.
         const grouped = collection.reduce((acc: { [key: string]: AnimeCollection[] }, cur) => {
+            const completedAtKey = (cur.status === CollectionStatus.Completed && cur.completed_at)
+                ? `${cur.completed_at.getFullYear()}-${cur.completed_at.getMonth() + 1}-${cur.completed_at.getDate()}`
+                : '';
             let key: string;
             if (syncComment)
-                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${cur.comments}`;
+                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${cur.comments}-${completedAtKey}`;
             else
-                key = `${cur.status}-${cur.score}-${cur.watched_episodes}`;
+                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${completedAtKey}`;
             if (!acc[key]) acc[key] = [];
             acc[key].push(cur);
             return acc;
@@ -241,12 +244,22 @@ class AnilistClient {
                 }
                 ids.push(Number(this.media_to_entry_id.get(c.anilist_id)));
             }
+            // Build completedAt for batch update
+            let completedAt: { year: number, month: number, day: number } | undefined;
+            if (collections[0].status === CollectionStatus.Completed && collections[0].completed_at) {
+                completedAt = {
+                    year: collections[0].completed_at.getFullYear(),
+                    month: collections[0].completed_at.getMonth() + 1,
+                    day: collections[0].completed_at.getDate(),
+                };
+            }
             variables.push({
                 ids,
                 status,
                 scoreRaw,
                 progress,
                 notes,
+                completedAt,
             });
         }
 
@@ -278,8 +291,8 @@ class AnilistClient {
         }
 
         const query = `
-            mutation ($mediaId: Int, $status: MediaListStatus, $scoreRaw: Int, $progress: Int, $notes: String) {
-                SaveMediaListEntry (mediaId: $mediaId, status: $status, scoreRaw: $scoreRaw, progress: $progress, notes: $notes) {
+            mutation ($mediaId: Int, $status: MediaListStatus, $scoreRaw: Int, $progress: Int, $notes: String, $completedAt: FuzzyDateInput) {
+                SaveMediaListEntry (mediaId: $mediaId, status: $status, scoreRaw: $scoreRaw, progress: $progress, notes: $notes, completedAt: $completedAt) {
                     id
                 }
             }
@@ -293,6 +306,14 @@ class AnilistClient {
         // Only set scoreRaw when score is non-zero (rated)
         if (collection.score > 0) {
             variables.scoreRaw = collection.score * 10;
+        }
+        // Sync completedAt when status is Completed
+        if (collection.status === CollectionStatus.Completed && collection.completed_at) {
+            variables.completedAt = {
+                year: collection.completed_at.getFullYear(),
+                month: collection.completed_at.getMonth() + 1,
+                day: collection.completed_at.getDate(),
+            };
         }
         let result = await this.query(query, variables);
         if (!result || !result.SaveMediaListEntry) {
