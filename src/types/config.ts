@@ -9,6 +9,8 @@ export interface Config {
     log_console_level: "debug" | "info" | "warn" | "error";
     china_anime_database_url: string;
     global_anime_database_url: string;
+    sync_to_anilist?: boolean;
+    sync_to_mal?: boolean;
 }
 
 export type ManualRelations = [number, number][];

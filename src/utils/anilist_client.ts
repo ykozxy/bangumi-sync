@@ -157,7 +157,7 @@ class AnilistClient {
         const variables: {
             ids: number[],
             status: MediaListStatus,
-            scoreRaw: number,
+            scoreRaw?: number,
             progress: number,
             notes?: string,
             completedAt?: {
@@ -170,13 +170,16 @@ class AnilistClient {
         createProgressBar(collection.length);
         let successCount = 0;
 
-        // Group collections with same status, score, progress, and comments together.
+        // Group collections with same status, score, progress, comments, and completedAt together.
         const grouped = collection.reduce((acc: { [key: string]: AnimeCollection[] }, cur) => {
+            const completedAtKey = (cur.status === CollectionStatus.Completed && cur.completed_at)
+                ? `${cur.completed_at.getFullYear()}-${cur.completed_at.getMonth() + 1}-${cur.completed_at.getDate()}`
+                : '';
             let key: string;
             if (syncComment)
-                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${cur.comments}`;
+                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${cur.comments}-${completedAtKey}`;
             else
-                key = `${cur.status}-${cur.score}-${cur.watched_episodes}`;
+                key = `${cur.status}-${cur.score}-${cur.watched_episodes}-${completedAtKey}`;
             if (!acc[key]) acc[key] = [];
             acc[key].push(cur);
             return acc;
@@ -185,7 +188,7 @@ class AnilistClient {
         // Construct variables
         for (const key in grouped) {
             const collections = grouped[key];
-            const scoreRaw = collections[0].score * 10; // Convert to 1-100 raw score scale
+            const scoreRaw = collections[0].score > 0 ? collections[0].score * 10 : undefined; // Convert to 1-100 raw score scale, skip if unrated
             const progress = collections[0].watched_episodes;
             const notes = syncComment ? collections[0].comments : undefined;
             const status = AnilistClient.convertStatus(collections[0].status);
@@ -241,18 +244,33 @@ class AnilistClient {
                 }
                 ids.push(Number(this.media_to_entry_id.get(c.anilist_id)));
             }
+            // Build completedAt for batch update
+            let completedAt: { year: number, month: number, day: number } | undefined;
+            if (collections[0].status === CollectionStatus.Completed && collections[0].completed_at) {
+                completedAt = {
+                    year: collections[0].completed_at.getFullYear(),
+                    month: collections[0].completed_at.getMonth() + 1,
+                    day: collections[0].completed_at.getDate(),
+                };
+            }
             variables.push({
                 ids,
                 status,
                 scoreRaw,
                 progress,
                 notes,
+                completedAt,
             });
         }
 
         // Update
         for (let variable of variables) {
-            await this.query(query, variable);
+            let result = await this.query(query, variable);
+            if (!result) {
+                autoLog(`Batch update failed (retries exhausted), skipping ${variable.ids.length} entries.`, "Anilist.smartUpdateCollection", LogLevel.Error);
+                incrementProgressBar(variable.ids.length);
+                continue;
+            }
             incrementProgressBar(variable.ids.length);
             successCount += variable.ids.length;
         }
@@ -273,25 +291,39 @@ class AnilistClient {
         }
 
         const query = `
-            mutation ($mediaId: Int, $status: MediaListStatus, $scoreRaw: Int, $progress: Int, $notes: String) {
-                SaveMediaListEntry (mediaId: $mediaId, status: $status, scoreRaw: $scoreRaw, progress: $progress, notes: $notes) {
+            mutation ($mediaId: Int, $status: MediaListStatus, $scoreRaw: Int, $progress: Int, $notes: String, $completedAt: FuzzyDateInput) {
+                SaveMediaListEntry (mediaId: $mediaId, status: $status, scoreRaw: $scoreRaw, progress: $progress, notes: $notes, completedAt: $completedAt) {
                     id
                 }
             }
         `;
-        let variables = {
+        let variables: any = {
             mediaId: Number(collection.anilist_id),
             status: AnilistClient.convertStatus(collection.status),
-            scoreRaw: collection.score * 10,
             progress: collection.watched_episodes,
             notes: syncComment ? collection.comments : undefined,
         };
-        let result = await this.query(query, variables);
-        if (result.SaveMediaListEntry) {
-            this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
-            return true;
+        // Only set scoreRaw when score is non-zero (rated)
+        if (collection.score > 0) {
+            variables.scoreRaw = collection.score * 10;
         }
-        return false;
+        // Sync completedAt when status is Completed
+        if (collection.status === CollectionStatus.Completed && collection.completed_at) {
+            variables.completedAt = {
+                year: collection.completed_at.getFullYear(),
+                month: collection.completed_at.getMonth() + 1,
+                day: collection.completed_at.getDate(),
+            };
+        }
+        let result = await this.query(query, variables);
+        if (!result || !result.SaveMediaListEntry) {
+            if (!result) {
+                autoLog(`Failed to save ${collection.title} (anilist=${collection.anilist_id}), query returned null (retries exhausted).`, "Anilist.saveEntry", LogLevel.Error);
+            }
+            return false;
+        }
+        this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
+        return true;
     }
 
     /**
