@@ -8,6 +8,7 @@
   "log_file_level": "info",
   "log_console_level": "info",
   "sync_to_anilist": true,
+  "sync_to_mal": true,
   "global_anime_database_url": "https://github.com/manami-project/anime-offline-database/releases/download/latest/anime-offline-database-minified.json",
   "china_anime_database_url": "https://cdn.jsdelivr.net/npm/bangumi-data/dist/data.json"
 }

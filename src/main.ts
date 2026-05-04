@@ -1,11 +1,13 @@
 import {buildDatabase, getChinaAnimeItem, releaseDatabase} from "./utils/data_util";
 import {bangumiClient} from "./utils/bangumi_client";
 import {anilistClient} from "./utils/anilist_client";
+import {malClient} from "./utils/mal_client";
 import {
     fillBangumiCollection,
     generateChangelog,
     getAnilistCollections,
     getBangumiCollections,
+    getMalCollections,
     renderDiff
 } from "./utils/sync_util";
 import * as readline from "readline";
@@ -15,11 +17,20 @@ import {isServerMode, sleep} from "./utils/util";
 import {config, reloadConfig} from "./utils/config_util";
 
 async function singleMode(userConfirm: boolean) {
+    // Validate sync targets
+    if (!config.sync_to_anilist && !config.sync_to_mal) {
+        autoLog("At least one of sync_to_anilist or sync_to_mal must be true.", "Main");
+        process.exit(1);
+    }
+
     autoLog("Initializing...", "Main")
     await buildDatabase();
     await bangumiClient.autoUpdateToken();
     if (config.sync_to_anilist !== false) {
         await anilistClient.autoUpdateToken();
+    }
+    if (config.sync_to_mal) {
+        await malClient.autoUpdateToken();
     }
     autoLog("Finished.", "Main")
     await sleep(200);
@@ -60,7 +71,30 @@ async function singleMode(userConfirm: boolean) {
         autoLog(`${changeLog.length} Anilist changes.`, "Main");
     }
 
-    if (changeLog.length === 0) {
+    // --- MAL Sync ---
+    let malChangeLog: { before?: any, after: any }[] = [];
+    if (config.sync_to_mal) {
+        autoLog("Fetching MAL collections...", "Main");
+        let malCollection = await getMalCollections();
+        autoLog("Generating MAL changelog...", "Main");
+        malChangeLog = await generateChangelog(bangumiCollection, malCollection, config.sync_comments);
+        for (let change of malChangeLog) {
+            let name = "";
+            if (change.after.bgm_id) {
+                await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
+                    if (item) {
+                        name = item.title;
+                    }
+                })
+            }
+            if (!name) name = <string>change.after.bgm_id;
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff/MAL");
+            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff/MAL");
+        }
+        autoLog(`${malChangeLog.length} MAL changes.`, "Main");
+    }
+
+    if (changeLog.length === 0 && malChangeLog.length === 0) {
         return;
     }
 
@@ -80,6 +114,10 @@ async function singleMode(userConfirm: boolean) {
                 let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
                 autoLog(`[Anilist] ${successCount} changes successfully applied.`, "Main");
             }
+            if (malChangeLog.length > 0) {
+                let successCount = await malClient.smartUpdateCollection(malChangeLog.map(change => change.after), config.sync_comments);
+                autoLog(`[MAL] ${successCount} changes successfully applied.`, "Main");
+            }
         }
     } else {
         await sleep(200);
@@ -87,10 +125,20 @@ async function singleMode(userConfirm: boolean) {
             let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
             autoLog(`[Anilist] ${successCount} changes successfully applied.`, "Main");
         }
+        if (malChangeLog.length > 0) {
+            let successCount = await malClient.smartUpdateCollection(malChangeLog.map(change => change.after), config.sync_comments);
+            autoLog(`[MAL] ${successCount} changes successfully applied.`, "Main");
+        }
     }
 }
 
 async function serverMode() {
+    // Validate sync targets
+    if (!config.sync_to_anilist && !config.sync_to_mal) {
+        autoLog("At least one of sync_to_anilist or sync_to_mal must be true.", "Main");
+        process.exit(1);
+    }
+
     /* Initialize */
     autoLog("Getting tokens...", "Main");
 
@@ -99,6 +147,9 @@ async function serverMode() {
         await bangumiClient.autoUpdateToken();
         if (config.sync_to_anilist !== false) {
             await anilistClient.autoUpdateToken();
+        }
+        if (config.sync_to_mal) {
+            await malClient.autoUpdateToken();
         }
         setTimeout(refreshToken, 60 * 60 * 1000);
     };
@@ -150,6 +201,39 @@ async function serverMode() {
                 notify({
                     title: "Bangumi-Sync",
                     message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
+                });
+            }
+        }
+
+        // --- MAL Sync ---
+        if (config.sync_to_mal) {
+            autoLog("Fetching MAL collections...", "Main");
+            let malCollection = await getMalCollections();
+            autoLog("Generating MAL changelog...", "Main");
+            let malChangeLog = await generateChangelog(bangumiCollection, malCollection, config.sync_comments);
+
+            for (let change of malChangeLog) {
+                let name = "";
+                if (change.after.bgm_id) {
+                    await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
+                        if (item) {
+                            name = item.title;
+                        }
+                    })
+                }
+                if (!name) name = <string>change.after.bgm_id;
+                autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff/MAL");
+                autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff/MAL");
+            }
+
+            autoLog("Updating MAL collections...", "Main");
+            let malSuccessCount = await malClient.smartUpdateCollection(malChangeLog.map(change => change.after), config.sync_comments);
+            autoLog(`[MAL] ${malSuccessCount} changes successfully applied.`, "Main");
+
+            if (malSuccessCount != malChangeLog.length && config.enable_notifications) {
+                notify({
+                    title: "Bangumi-Sync",
+                    message: `[MAL] Failed to update ${malChangeLog.length - malSuccessCount} collections, see log for details.`,
                 });
             }
         }
