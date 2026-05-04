@@ -526,7 +526,7 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
             });
         }
 
-        if (syncComment && anilist.comments != bangumi.comments) {
+        if (syncComment && (anilist.comments || '') != (bangumi.comments || '')) {
             result.push({
                 before: anilist,
                 after: bangumi,
@@ -561,7 +561,7 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     }
     if (syncComment) {
         if (before && before.comments != after.comments) {
-            results.push(`Comments: ${before ? before.comments : 'NA'} -> ${after.comments}`);
+            results.push(`Comments: ${before.comments || 'NA'} -> ${after.comments || 'NA'}`);
         } else if (!before && after.comments) {
             results.push(`Comments: NA -> ${after.comments}`);
         }
