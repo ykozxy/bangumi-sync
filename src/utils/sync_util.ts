@@ -513,6 +513,11 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
         if (!anilist.title) anilist.title = bangumi.title;
         if (!bangumi.title) bangumi.title = anilist.title;
 
+        // If bangumi score is 0 (unrated), preserve the existing anilist score
+        if (bangumi.score === 0 && anilist.score !== 0) {
+            bangumi.score = anilist.score;
+        }
+
         // Compare entries for changes
         if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes) {
             result.push({
@@ -543,7 +548,10 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     let results: string[] = [];
 
     if (!before || before.score != after.score) {
-        results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
+        // Skip score display when both are 0 (unrated) or when new entry has no score
+        if (after.score !== 0 || (before && before.score !== 0)) {
+            results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
+        }
     }
     if (!before || before.status != after.status) {
         results.push(`Status: ${before ? before.status : 'NA'} -> ${after.status}`);
