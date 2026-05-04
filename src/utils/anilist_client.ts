@@ -252,7 +252,12 @@ class AnilistClient {
 
         // Update
         for (let variable of variables) {
-            await this.query(query, variable);
+            let result = await this.query(query, variable);
+            if (!result) {
+                autoLog(`Batch update failed (retries exhausted), skipping ${variable.ids.length} entries.`, "Anilist.smartUpdateCollection", LogLevel.Error);
+                incrementProgressBar(variable.ids.length);
+                continue;
+            }
             incrementProgressBar(variable.ids.length);
             successCount += variable.ids.length;
         }
@@ -290,11 +295,14 @@ class AnilistClient {
             variables.scoreRaw = collection.score * 10;
         }
         let result = await this.query(query, variables);
-        if (result.SaveMediaListEntry) {
-            this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
-            return true;
+        if (!result || !result.SaveMediaListEntry) {
+            if (!result) {
+                autoLog(`Failed to save ${collection.title} (anilist=${collection.anilist_id}), query returned null (retries exhausted).`, "Anilist.saveEntry", LogLevel.Error);
+            }
+            return false;
         }
-        return false;
+        this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
+        return true;
     }
 
     /**
