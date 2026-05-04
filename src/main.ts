@@ -18,14 +18,19 @@ async function singleMode(userConfirm: boolean) {
     autoLog("Initializing...", "Main")
     await buildDatabase();
     await bangumiClient.autoUpdateToken();
-    await anilistClient.autoUpdateToken();
+    if (config.sync_to_anilist !== false) {
+        await anilistClient.autoUpdateToken();
+    }
     autoLog("Finished.", "Main")
     await sleep(200);
 
     autoLog("Fetching Bangumi collections...", "Main")
     let bangumiCollection = await getBangumiCollections();
-    autoLog("Fetching Anilist collections...", "Main")
-    let anilistCollection = await getAnilistCollections();
+    let anilistCollection: any[] = [];
+    if (config.sync_to_anilist !== false) {
+        autoLog("Fetching Anilist collections...", "Main")
+        anilistCollection = await getAnilistCollections();
+    }
     autoLog("Finished.", "Main")
     await sleep(200);
 
@@ -34,22 +39,26 @@ async function singleMode(userConfirm: boolean) {
     autoLog("Finished.", "Main");
     await sleep(200);
 
-    autoLog("Generating changelog...", "Main");
-    let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
-    for (let change of changeLog) {
-        let name = "";
-        if (change.after.bgm_id) {
-            await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
-                if (item) {
-                    name = item.title;
-                }
-            })
+    // --- Anilist Sync ---
+    let changeLog: { before?: any, after: any }[] = [];
+    if (config.sync_to_anilist !== false) {
+        autoLog("Generating Anilist changelog...", "Main");
+        changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+        for (let change of changeLog) {
+            let name = "";
+            if (change.after.bgm_id) {
+                await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
+                    if (item) {
+                        name = item.title;
+                    }
+                })
+            }
+            if (!name) name = <string>change.after.bgm_id;
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
+            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
         }
-        if (!name) name = <string>change.after.bgm_id;
-        autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
-        autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
+        autoLog(`${changeLog.length} Anilist changes.`, "Main");
     }
-    autoLog(`${changeLog.length} changes.`, "Main");
 
     if (changeLog.length === 0) {
         return;
@@ -67,13 +76,17 @@ async function singleMode(userConfirm: boolean) {
             });
         });
         if (confirm) {
-            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
-            autoLog(`${successCount} changes successfully applied.`, "Main");
+            if (changeLog.length > 0) {
+                let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
+                autoLog(`[Anilist] ${successCount} changes successfully applied.`, "Main");
+            }
         }
     } else {
         await sleep(200);
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after, config.sync_comments));
-        autoLog(`${successCount} changes successfully applied.`, "Main");
+        if (changeLog.length > 0) {
+            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
+            autoLog(`[Anilist] ${successCount} changes successfully applied.`, "Main");
+        }
     }
 }
 
@@ -84,7 +97,9 @@ async function serverMode() {
     // Setup token auto-refresh every hour
     const refreshToken = async () => {
         await bangumiClient.autoUpdateToken();
-        await anilistClient.autoUpdateToken();
+        if (config.sync_to_anilist !== false) {
+            await anilistClient.autoUpdateToken();
+        }
         setTimeout(refreshToken, 60 * 60 * 1000);
     };
     await refreshToken();
@@ -99,38 +114,44 @@ async function serverMode() {
 
         autoLog("Fetching Bangumi collections...", "Main");
         let bangumiCollection = await getBangumiCollections();
-        autoLog("Fetching Anilist collections...", "Main");
-        let anilistCollection = await getAnilistCollections();
+        let anilistCollection: any[] = [];
+        if (config.sync_to_anilist !== false) {
+            autoLog("Fetching Anilist collections...", "Main");
+            anilistCollection = await getAnilistCollections();
+        }
 
         autoLog("Matching collections...", "Main");
         bangumiCollection = await fillBangumiCollection(bangumiCollection);
 
-        autoLog("Generating changelog...", "Main");
-        let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
+        // --- Anilist Sync ---
+        if (config.sync_to_anilist !== false) {
+            autoLog("Generating Anilist changelog...", "Main");
+            let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
 
-        for (let change of changeLog) {
-            let name = "";
-            if (change.after.bgm_id) {
-                await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
-                    if (item) {
-                        name = item.title;
-                    }
-                })
+            for (let change of changeLog) {
+                let name = "";
+                if (change.after.bgm_id) {
+                    await getChinaAnimeItem(change.after.bgm_id, false).then(item => {
+                        if (item) {
+                            name = item.title;
+                        }
+                    })
+                }
+                if (!name) name = <string>change.after.bgm_id;
+                autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
+                autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
             }
-            if (!name) name = <string>change.after.bgm_id;
-            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
-            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
-        }
 
-        autoLog("Updating Anilist collections...", "Main");
-        let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
-        autoLog(`${successCount} changes successfully applied.`, "Main");
+            autoLog("Updating Anilist collections...", "Main");
+            let successCount = await anilistClient.smartUpdateCollection(changeLog.map(change => change.after), config.sync_comments);
+            autoLog(`[Anilist] ${successCount} changes successfully applied.`, "Main");
 
-        if (successCount != changeLog.length && config.enable_notifications) {
-            notify({
-                title: "Bangumi-Sync",
-                message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
-            });
+            if (successCount != changeLog.length && config.enable_notifications) {
+                notify({
+                    title: "Bangumi-Sync",
+                    message: `[Anilist] Failed to update ${changeLog.length - successCount} collections, see log for details.`,
+                });
+            }
         }
 
         autoLog("Freeing memory...", "Main");
