@@ -54,8 +54,8 @@ async function singleMode(userConfirm: boolean) {
                 })
             }
             if (!name) name = <string>change.after.bgm_id;
-            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
-            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
+            autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff/Anilist");
+            autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff/Anilist");
         }
         autoLog(`${changeLog.length} Anilist changes.`, "Main");
     }
@@ -138,8 +138,8 @@ async function serverMode() {
                     })
                 }
                 if (!name) name = <string>change.after.bgm_id;
-                autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff");
-                autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff");
+                autoLog(`${name} (bgm=${change.after.bgm_id}, mal=${change.after.mal_id}):`, "RenderDiff/Anilist");
+                autoLog(renderDiff(change.before, change.after, config.sync_comments, "; "), "RenderDiff/Anilist");
             }
 
             autoLog("Updating Anilist collections...", "Main");
