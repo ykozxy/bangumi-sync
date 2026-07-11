@@ -1,0 +1,20 @@
+[package]
+name = "sync-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "sync_core"
+path = "src/lib.rs"
+
+[dependencies]
+argon2 = "0.5"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+getrandom = "0.2"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+zeroize = "1.8"

@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "crates/sync-core",
+    "crates/sync-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ykozxy/bangumi-sync"

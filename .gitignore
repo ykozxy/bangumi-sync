@@ -1,5 +1,7 @@
 # Project exclude paths
+/.idea/
 /build/
 /cache/
 /log/
 /node_modules/
+/target/
