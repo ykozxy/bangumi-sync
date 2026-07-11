@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
-use sync_core::model::{CollectionStatus, MediaKind, Provider};
+use sync_core::model::{CollectionStatus, MediaKind, Provider, SyncField};
 use sync_core::provider::{
     parse_anilist_collection_fixture, parse_bangumi_collection_fixture,
     parse_bangumi_episode_collection_fixture, plan_provider_credential_action,
@@ -10,9 +10,11 @@ use sync_core::provider::{
     ProviderCredentialExchangeResult, ProviderCredentialState, ProviderRefreshTokenState,
 };
 use sync_core::store::{
-    ExternalIdEdgeInput, ExternalIdEdgeUpsertInput, ProviderCredentialInput,
-    ProviderCredentialRefreshAttemptFinalizeStatus, ProviderCredentialRefreshAttemptInput,
-    ProviderCredentialRefreshAttemptStatus, ProviderItemInput, SqliteStore, StoreError,
+    ExternalIdEdgeInput, ExternalIdEdgeUpsertInput, FieldObservationChangeOrigin,
+    ProviderCredentialInput, ProviderCredentialRefreshAttemptFinalizeStatus,
+    ProviderCredentialRefreshAttemptInput, ProviderCredentialRefreshAttemptStatus,
+    ProviderItemInput, SqliteStore, StoreError, WriteJournalFieldIntent, WriteJournalIntent,
+    WriteJournalIntentOutcome,
 };
 
 fn table_columns(path: &Path, table: &str) -> Vec<String> {
@@ -43,6 +45,8 @@ fn migrations_create_required_tables_and_fts_indexes() {
         "field_provenance",
         "sync_state",
         "write_journal",
+        "write_journal_field",
+        "collection_snapshot_state",
         "conflict",
         "manual_mapping",
         "provider_credential",
@@ -65,6 +69,8 @@ fn migrations_create_required_tables_and_fts_indexes() {
         "idx_collection_entry_account_work",
         "idx_field_provenance_lookup",
         "idx_write_journal_provider_account_started",
+        "idx_write_journal_field_journal",
+        "idx_write_journal_field_target",
         "idx_conflict_work_field_resolved",
         "idx_provider_credential_provider_account",
         "idx_provider_credential_refresh_attempt_provider_account",
@@ -328,6 +334,44 @@ fn existing_sqlite_store_is_upgraded_with_provider_credential_table() {
         connection
             .execute_batch(include_str!("../migrations/0002_fts_indexes.sql"))
             .expect("old fts migration should run");
+        connection
+            .execute_batch(
+                "INSERT INTO identity_work(id, media_kind, display_title)
+                 VALUES (1, 'anime', 'legacy populated work');
+                 INSERT INTO collection_entry(
+                    id,
+                    account_id,
+                    work_id,
+                    provider,
+                    provider_entry_id,
+                    media_kind,
+                    status,
+                    score_hundred,
+                    provider_payload_hash
+                 )
+                 VALUES (
+                    1,
+                    'legacy-account',
+                    1,
+                    'anilist',
+                    '1',
+                    'anime',
+                    'completed',
+                    100,
+                    'legacy-payload'
+                 );
+                 INSERT INTO field_provenance(
+                    collection_entry_id,
+                    field_name,
+                    provider,
+                    observed_value_hash,
+                    source_reliability
+                 )
+                 VALUES
+                    (1, 'status', 'anilist', 'legacy-status-hash', 'provider_snapshot'),
+                    (1, 'score_hundred', 'anilist', 'legacy-score-hash', 'provider_snapshot');",
+            )
+            .expect("populated legacy rows should insert");
     }
 
     let store = SqliteStore::open(&path).expect("existing store should open and self-upgrade");
@@ -340,6 +384,9 @@ fn existing_sqlite_store_is_upgraded_with_provider_credential_table() {
     assert!(schema_objects
         .iter()
         .any(|name| name == "provider_credential_refresh_attempt"));
+    assert!(schema_objects
+        .iter()
+        .any(|name| name == "write_journal_field"));
     let provider_item_columns = table_columns(&path, "provider_item");
     assert!(
         provider_item_columns
@@ -347,6 +394,55 @@ fn existing_sqlite_store_is_upgraded_with_provider_credential_table() {
             .any(|column| column == "release_year"),
         "existing stores should be upgraded with provider_item.release_year"
     );
+    let field_provenance_columns = table_columns(&path, "field_provenance");
+    for column in [
+        "previous_observed_value_hash",
+        "observation_version",
+        "last_changed_observation_version",
+        "change_origin",
+        "attributed_write_journal_field_id",
+        "externally_cleared",
+        "pending_external_change",
+    ] {
+        assert!(
+            field_provenance_columns
+                .iter()
+                .any(|existing| existing == column),
+            "existing stores should be upgraded with field_provenance.{column}"
+        );
+    }
+    let write_journal_field_columns = table_columns(&path, "write_journal_field");
+    for column in [
+        "source_value_hash",
+        "basis_snapshot_generation",
+        "consumed_at",
+    ] {
+        assert!(
+            write_journal_field_columns
+                .iter()
+                .any(|existing| existing == column),
+            "existing stores should be upgraded with write_journal_field.{column}"
+        );
+    }
+    let provenance_fields = store
+        .field_provenance_fields(1)
+        .expect("upgraded legacy provenance should load");
+    assert_eq!(
+        provenance_fields,
+        vec![
+            "progress_chapters".to_owned(),
+            "progress_episodes".to_owned(),
+            "progress_volumes".to_owned(),
+            "score".to_owned(),
+            "status".to_owned(),
+        ]
+    );
+    let observations = store
+        .field_observations(1)
+        .expect("upgraded legacy observations should load");
+    assert!(observations.values().all(|observation| {
+        observation.observation_version == 1 && observation.last_changed_observation_version == 1
+    }));
 
     let _ = std::fs::remove_file(path);
 }
@@ -1338,11 +1434,34 @@ fn collection_snapshot_import_persists_entries_and_is_idempotent() {
     assert_eq!(
         provenance_fields,
         vec![
+            "progress_chapters".to_owned(),
             "progress_episodes".to_owned(),
-            "score_hundred".to_owned(),
+            "progress_volumes".to_owned(),
+            "score".to_owned(),
             "status".to_owned()
         ]
     );
+    let initial_observations = store
+        .field_observations(entry.id)
+        .expect("field observation lookup should work");
+    assert_eq!(initial_observations.len(), 5);
+    for field in [
+        SyncField::Status,
+        SyncField::Score,
+        SyncField::ProgressEpisodes,
+        SyncField::ProgressChapters,
+        SyncField::ProgressVolumes,
+    ] {
+        let observation = initial_observations
+            .get(&field)
+            .expect("default-writable field should have initial provenance");
+        assert_eq!(observation.observation_version, 1);
+        assert_eq!(observation.previous_observed_value_hash, None);
+        assert_eq!(
+            observation.change_origin,
+            FieldObservationChangeOrigin::Initial
+        );
+    }
 
     let updated_fixture = r#"{
         "data": [
@@ -1388,6 +1507,208 @@ fn collection_snapshot_import_persists_entries_and_is_idempotent() {
     assert_eq!(
         updated.provider_payload_hash,
         updated_snapshot.raw_payload_hash()
+    );
+    let updated_observations = store
+        .field_observations(updated.id)
+        .expect("updated field observations should load");
+    for field in [
+        SyncField::Status,
+        SyncField::Score,
+        SyncField::ProgressEpisodes,
+    ] {
+        let observation = updated_observations
+            .get(&field)
+            .expect("changed field should have provenance");
+        assert_eq!(observation.observation_version, 2);
+        assert!(observation.previous_observed_value_hash.is_some());
+        assert_eq!(
+            observation.change_origin,
+            FieldObservationChangeOrigin::External
+        );
+    }
+    for field in [SyncField::ProgressChapters, SyncField::ProgressVolumes] {
+        let observation = updated_observations
+            .get(&field)
+            .expect("unchanged field should have provenance");
+        assert_eq!(observation.observation_version, 2);
+        assert_eq!(
+            observation.previous_observed_value_hash.as_deref(),
+            Some(observation.observed_value_hash.as_str())
+        );
+        assert_eq!(
+            observation.change_origin,
+            FieldObservationChangeOrigin::Unchanged
+        );
+    }
+}
+
+#[test]
+fn collection_snapshot_provenance_tracks_optional_field_clear() {
+    let store = SqliteStore::open_in_memory().expect("in-memory store should open");
+    let initial = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("initial fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &initial)
+        .expect("initial snapshot should import");
+    let entry = store
+        .collection_entry_details(
+            "fixture-account",
+            Provider::Bangumi,
+            MediaKind::Anime,
+            "253",
+        )
+        .expect("entry lookup should work")
+        .expect("entry should exist");
+    let initial_score = store
+        .field_observations(entry.id)
+        .expect("initial observations should load")
+        .remove(&SyncField::Score)
+        .expect("initial score observation should exist");
+
+    let cleared = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":0,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("cleared fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &cleared)
+        .expect("cleared snapshot should import");
+    let cleared_score = store
+        .field_observations(entry.id)
+        .expect("cleared observations should load")
+        .remove(&SyncField::Score)
+        .expect("cleared score observation should exist");
+    assert_eq!(cleared_score.observation_version, 2);
+    assert_eq!(
+        cleared_score.previous_observed_value_hash,
+        Some(initial_score.observed_value_hash)
+    );
+    assert_ne!(
+        cleared_score.previous_observed_value_hash.as_deref(),
+        Some(cleared_score.observed_value_hash.as_str())
+    );
+    assert_eq!(
+        cleared_score.change_origin,
+        FieldObservationChangeOrigin::External
+    );
+    assert!(cleared_score.externally_cleared);
+
+    store
+        .upsert_collection_snapshot("fixture-account", &cleared)
+        .expect("unchanged cleared snapshot should import");
+    let unchanged_score = store
+        .field_observations(entry.id)
+        .expect("unchanged observations should load")
+        .remove(&SyncField::Score)
+        .expect("unchanged score observation should exist");
+    assert_eq!(unchanged_score.observation_version, 3);
+    assert_eq!(
+        unchanged_score.previous_observed_value_hash.as_deref(),
+        Some(unchanged_score.observed_value_hash.as_str())
+    );
+    assert_eq!(
+        unchanged_score.change_origin,
+        FieldObservationChangeOrigin::Unchanged
+    );
+    assert!(unchanged_score.externally_cleared);
+}
+
+#[test]
+fn attempted_write_journal_requires_reconciliation_before_retry() {
+    let store = SqliteStore::open_in_memory().expect("in-memory store should open");
+    let work_id = store
+        .create_identity_work(MediaKind::Anime, "journal fixture")
+        .expect("work should create");
+    for (provider, external_id) in [(Provider::Bangumi, "253"), (Provider::AniList, "1")] {
+        store
+            .upsert_external_id_edge(ExternalIdEdgeInput {
+                work_id,
+                provider,
+                media_kind: MediaKind::Anime,
+                external_id: external_id.to_owned(),
+                source: "fixture".to_owned(),
+                confidence: 1000,
+                match_method: "manual-test".to_owned(),
+                dataset_version: None,
+            })
+            .expect("identity edge should insert");
+    }
+    let bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("bangumi fixture should parse");
+    let anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":70,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &bangumi)
+        .expect("bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &anilist)
+        .expect("anilist snapshot should import");
+
+    let source_entry = store
+        .collection_entry_details(
+            "fixture-account",
+            Provider::Bangumi,
+            MediaKind::Anime,
+            "253",
+        )
+        .expect("source lookup should work")
+        .expect("source should exist");
+    let target_entry = store
+        .collection_entry_details("fixture-account", Provider::AniList, MediaKind::Anime, "1")
+        .expect("target lookup should work")
+        .expect("target should exist");
+    let source_hash = store
+        .field_observations(source_entry.id)
+        .expect("source observations should load")
+        .remove(&SyncField::Score)
+        .expect("source score should exist")
+        .observed_value_hash;
+    let target_hash = store
+        .field_observations(target_entry.id)
+        .expect("target observations should load")
+        .remove(&SyncField::Score)
+        .expect("target score should exist")
+        .observed_value_hash;
+    let intent = WriteJournalIntent {
+        provider: Provider::AniList,
+        account_id: "fixture-account".to_owned(),
+        operation_id: "ambiguous-attempt-fixture".to_owned(),
+        request_body: r#"{"score":100}"#.to_owned(),
+        work_id,
+        source_provider: Provider::Bangumi,
+        media_kind: MediaKind::Anime,
+        target_provider_entry_id: "1".to_owned(),
+        fields: vec![WriteJournalFieldIntent {
+            field: SyncField::Score,
+            before_value_hash: target_hash,
+            source_value_hash: source_hash.clone(),
+            expected_value_hash: source_hash,
+        }],
+    };
+
+    assert_eq!(
+        store
+            .record_write_journal_intent(intent.clone())
+            .expect("first intent should record"),
+        WriteJournalIntentOutcome::Recorded
+    );
+    assert_eq!(
+        store
+            .record_write_journal_intent(intent)
+            .expect_err("ambiguous attempted write must not be resent"),
+        StoreError::AmbiguousWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id: "1".to_owned(),
+        }
     );
 }
 

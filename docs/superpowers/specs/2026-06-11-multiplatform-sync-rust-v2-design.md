@@ -128,9 +128,11 @@ Core tables:
 - `identity_work`: canonical local work id, media kind, display title, confidence summary.
 - `external_id_edge`: work id, provider, media kind, external id, source, confidence, match method, dataset version, verified time, stale flag.
 - `collection_entry`: account id, work id, provider id, media kind, normalized status, progress, score, repeat count, private fields hash, provider payload hash.
-- `field_provenance`: collection entry id, field name, provider, observed value hash, observed time, source reliability.
+- `collection_snapshot_state`: account id, provider, media kind, local snapshot generation, payload hash, observed time.
+- `field_provenance`: collection entry id, field name, provider, current and previous value hashes, observation version, last changed version, change origin, pending external-change and external-clear markers, optional consumed journal-field attribution, observed time, source reliability.
 - `sync_state`: account pair/group, field policy, last planned time, last applied time.
 - `write_journal`: provider, account id, operation id, request hash, response hash, started time, completed time, result status.
+- `write_journal_field`: journal id, work/source/target identity, field name, basis observation version and snapshot generation, before/source/expected hashes, attribution version, and irreversible consumption marker.
 - `conflict`: work id, field name, provider values, selected resolution, reason, resolved time.
 - `manual_mapping`: manually verified external id relationships and ignored false-positive relationships.
 

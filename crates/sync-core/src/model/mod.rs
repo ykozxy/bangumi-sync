@@ -1,4 +1,5 @@
 mod collection;
+mod field_state;
 mod media;
 mod progress;
 mod provider;
@@ -7,6 +8,9 @@ mod status;
 mod sync_field;
 
 pub use collection::{CollectionEntry, CollectionEntryError};
+pub(crate) use field_state::{
+    stable_hash, CanonicalFieldState, MISSING_ENTRY_VALUE, UNSET_FIELD_VALUE,
+};
 pub use media::MediaKind;
 pub use progress::Progress;
 pub use provider::Provider;

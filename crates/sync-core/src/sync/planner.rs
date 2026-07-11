@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{CollectionStatus, MediaKind, Provider, SyncField};
-use crate::store::{PlanningCollectionEntry, SqliteStore, StoreError};
+use crate::model::{
+    CanonicalFieldState, CollectionStatus, MediaKind, Provider, SyncField, UNSET_FIELD_VALUE,
+};
+use crate::store::{
+    FieldObservationChangeOrigin, PlanningCollectionEntry, SqliteStore, StoreError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPlan {
@@ -66,6 +70,37 @@ pub struct PlanDiagnostic {
 pub struct FieldProviderValue {
     pub provider: Provider,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldResolutionEvidence {
+    LocalHistory,
+    WriteJournal,
+    TimestampBootstrap,
+}
+
+impl FieldResolutionEvidence {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalHistory => "local-history",
+            Self::WriteJournal => "write-journal",
+            Self::TimestampBootstrap => "timestamp-bootstrap",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FieldResolution {
+    field: SyncField,
+    source_provider: Provider,
+    evidence: FieldResolutionEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoricalFieldResolution {
+    Resolved(FieldResolution),
+    Conflict,
+    BootstrapUnavailable,
 }
 
 impl SyncPlan {
@@ -150,12 +185,13 @@ pub fn plan_dry_run(
             .get(&work_id)
             .expect("work id collected from grouped entries");
         let use_field_level_planning =
-            has_exactly_one_entry_per_selected_provider(entries, providers);
+            has_exactly_one_entry_per_selected_provider(entries, providers)
+                && (providers.len() >= 3 || has_historical_field_evidence(entries));
         if use_field_level_planning {
             let field_resolutions = field_level_source_providers(entries);
             let resolved_fields = field_resolutions
                 .iter()
-                .map(|(field, _)| *field)
+                .map(|resolution| resolution.field)
                 .collect::<HashSet<_>>();
             let work_conflicts = conflicts_for_work(work_id, entries)
                 .into_iter()
@@ -407,7 +443,7 @@ fn has_exactly_one_entry_per_selected_provider(
     entries: &[PlanningCollectionEntry],
     providers: &[Provider],
 ) -> bool {
-    if entries.len() != providers.len() || providers.len() < 3 {
+    if entries.len() != providers.len() || providers.len() < 2 {
         return false;
     }
 
@@ -420,7 +456,7 @@ fn has_exactly_one_entry_per_selected_provider(
     })
 }
 
-fn field_level_source_providers(entries: &[PlanningCollectionEntry]) -> Vec<(SyncField, Provider)> {
+fn has_historical_field_evidence(entries: &[PlanningCollectionEntry]) -> bool {
     [
         SyncField::Status,
         SyncField::Score,
@@ -429,10 +465,146 @@ fn field_level_source_providers(entries: &[PlanningCollectionEntry]) -> Vec<(Syn
         SyncField::ProgressVolumes,
     ]
     .into_iter()
-    .filter_map(|field| {
-        unique_reliable_outlier_source(entries, field).map(|source| (field, source.provider))
+    .any(|field| {
+        let observations = entries
+            .iter()
+            .map(|entry| entry.field_observations.get(&field))
+            .collect::<Option<Vec<_>>>();
+        let Some(observations) = observations else {
+            return false;
+        };
+        observations.iter().all(|observation| {
+            observation.previous_observed_value_hash.is_some()
+                || observation.change_origin == FieldObservationChangeOrigin::ToolWrite
+        }) || observations.iter().any(|observation| {
+            matches!(
+                observation.change_origin,
+                FieldObservationChangeOrigin::External | FieldObservationChangeOrigin::ToolWrite
+            ) || observation.attributed_write_journal_field_id.is_some()
+                || observation.pending_external_change
+        })
+    })
+}
+
+fn field_level_source_providers(entries: &[PlanningCollectionEntry]) -> Vec<FieldResolution> {
+    [
+        SyncField::Status,
+        SyncField::Score,
+        SyncField::ProgressEpisodes,
+        SyncField::ProgressChapters,
+        SyncField::ProgressVolumes,
+    ]
+    .into_iter()
+    .filter_map(|field| match historical_field_resolution(entries, field) {
+        HistoricalFieldResolution::Resolved(resolution) => Some(resolution),
+        HistoricalFieldResolution::Conflict => None,
+        HistoricalFieldResolution::BootstrapUnavailable => {
+            unique_reliable_outlier_source(entries, field).map(|source| FieldResolution {
+                field,
+                source_provider: source.provider,
+                evidence: FieldResolutionEvidence::TimestampBootstrap,
+            })
+        }
     })
     .collect()
+}
+
+fn historical_field_resolution(
+    entries: &[PlanningCollectionEntry],
+    field: SyncField,
+) -> HistoricalFieldResolution {
+    let observations = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .field_observations
+                .get(&field)
+                .map(|observation| (entry, observation))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(observations) = observations else {
+        return HistoricalFieldResolution::BootstrapUnavailable;
+    };
+
+    let distinct_values = observations
+        .iter()
+        .map(|(_, observation)| observation.observed_value_hash.as_str())
+        .collect::<HashSet<_>>();
+    if distinct_values.len() <= 1 {
+        return HistoricalFieldResolution::Conflict;
+    }
+
+    let external_changes = observations
+        .iter()
+        .filter(|(_, observation)| observation.pending_external_change)
+        .collect::<Vec<_>>();
+    if external_changes.len() > 1 {
+        return HistoricalFieldResolution::Conflict;
+    }
+    if let Some((source, _)) = external_changes.first() {
+        if has_field_value(source, field) {
+            return HistoricalFieldResolution::Resolved(FieldResolution {
+                field,
+                source_provider: source.provider,
+                evidence: FieldResolutionEvidence::LocalHistory,
+            });
+        }
+        return HistoricalFieldResolution::Conflict;
+    }
+
+    let tool_writes = observations
+        .iter()
+        .filter(|(_, observation)| observation.attributed_write_journal_field_id.is_some())
+        .collect::<Vec<_>>();
+    if !tool_writes.is_empty() {
+        if tool_writes.iter().any(|(_, observation)| {
+            observation.attributed_source_provider.is_none()
+                || observation.attributed_source_value_hash.is_none()
+        }) {
+            return HistoricalFieldResolution::Conflict;
+        }
+        let source_providers = tool_writes
+            .iter()
+            .filter_map(|(_, observation)| observation.attributed_source_provider)
+            .collect::<HashSet<_>>();
+        if source_providers.len() != 1 {
+            return HistoricalFieldResolution::Conflict;
+        }
+        let source_provider = *source_providers
+            .iter()
+            .next()
+            .expect("single journal source provider");
+        let Some(source) = entries
+            .iter()
+            .find(|entry| entry.provider == source_provider)
+        else {
+            return HistoricalFieldResolution::Conflict;
+        };
+        let Some(source_hash) = canonical_state(source).hash(field) else {
+            return HistoricalFieldResolution::Conflict;
+        };
+        if !has_field_value(source, field)
+            || tool_writes.iter().any(|(_, observation)| {
+                observation.attributed_source_value_hash.as_deref() != Some(source_hash.as_str())
+            })
+        {
+            return HistoricalFieldResolution::Conflict;
+        }
+        return HistoricalFieldResolution::Resolved(FieldResolution {
+            field,
+            source_provider,
+            evidence: FieldResolutionEvidence::WriteJournal,
+        });
+    }
+
+    if observations
+        .iter()
+        .all(|(_, observation)| observation.previous_observed_value_hash.is_some())
+    {
+        HistoricalFieldResolution::Conflict
+    } else {
+        HistoricalFieldResolution::BootstrapUnavailable
+    }
 }
 
 fn unique_reliable_outlier_source(
@@ -477,7 +649,7 @@ fn field_level_update_actions(
     work_id: i64,
     entries: &[PlanningCollectionEntry],
     providers: &[Provider],
-    field_resolutions: &[(SyncField, Provider)],
+    field_resolutions: &[FieldResolution],
 ) -> (Vec<PlannedAction>, Vec<PlanDiagnostic>) {
     let mut actions = Vec::new();
     let mut diagnostics = Vec::new();
@@ -502,9 +674,9 @@ fn field_level_update_actions(
             };
             let field_updates = field_resolutions
                 .iter()
-                .filter(|(_, provider)| provider == source_provider)
-                .map(|(field, _)| *field)
-                .filter(|field| field_value_opt(target, *field) != field_value_opt(source, *field))
+                .filter(|resolution| resolution.source_provider == *source_provider)
+                .map(|resolution| resolution.field)
+                .filter(|field| !target_matches_source(target, source, *field))
                 .collect::<Vec<_>>();
             diagnostics.extend(field_updates.iter().filter_map(|field| {
                 unsupported_write_diagnostic(
@@ -523,6 +695,17 @@ fn field_level_update_actions(
                 continue;
             }
 
+            let evidence = field_resolutions
+                .iter()
+                .filter(|resolution| {
+                    resolution.source_provider == *source_provider
+                        && field_updates.contains(&resolution.field)
+                })
+                .map(|resolution| resolution.evidence.as_str())
+                .collect::<HashSet<_>>();
+            let mut evidence = evidence.into_iter().collect::<Vec<_>>();
+            evidence.sort_unstable();
+
             actions.push(PlannedAction {
                 kind: PlannedActionKind::UpdateEntry,
                 work_id,
@@ -537,9 +720,10 @@ fn field_level_update_actions(
                 progress_volumes: source.progress_volumes,
                 field_changes: planned_field_changes(Some(target), source, &field_updates),
                 field_updates,
-                reason:
-                    "field-level reliable provider change; update target default-writable fields"
-                        .to_owned(),
+                reason: format!(
+                    "field-level {} resolution; update target default-writable fields",
+                    evidence.join("+")
+                ),
             });
         }
     }
@@ -691,12 +875,18 @@ fn conflict_for_field(
     entries: &[PlanningCollectionEntry],
     field: SyncField,
 ) -> Option<PlanConflict> {
+    let external_clear = entries.iter().any(|entry| {
+        entry
+            .field_observations
+            .get(&field)
+            .is_some_and(|observation| observation.externally_cleared)
+    });
     let mut distinct = HashSet::new();
     let values = entries
         .iter()
         .map(|entry| {
             let value = field_value(entry, field);
-            if value != "<unset>" {
+            if value != UNSET_FIELD_VALUE || external_clear {
                 distinct.insert(value.clone());
             }
             FieldProviderValue {
@@ -719,6 +909,15 @@ fn conflict_for_field(
     })
 }
 
+fn target_matches_source(
+    target: &PlanningCollectionEntry,
+    source: &PlanningCollectionEntry,
+    field: SyncField,
+) -> bool {
+    canonical_state(target).value(field)
+        == canonical_state(source).target_value(target.provider, field)
+}
+
 fn planned_field_changes(
     target: Option<&PlanningCollectionEntry>,
     source: &PlanningCollectionEntry,
@@ -729,18 +928,19 @@ fn planned_field_changes(
         .map(|field| PlannedFieldChange {
             field: *field,
             old_value: target.and_then(|entry| field_value_opt(entry, *field)),
-            new_value: field_value_opt(source, *field).unwrap_or_else(|| "<unset>".to_owned()),
+            new_value: field_value_opt(source, *field)
+                .unwrap_or_else(|| UNSET_FIELD_VALUE.to_owned()),
         })
         .collect()
 }
 
 fn field_value(entry: &PlanningCollectionEntry, field: SyncField) -> String {
-    field_value_opt(entry, field).unwrap_or_else(|| "<unset>".to_owned())
+    field_value_opt(entry, field).unwrap_or_else(|| UNSET_FIELD_VALUE.to_owned())
 }
 
 fn field_value_opt(entry: &PlanningCollectionEntry, field: SyncField) -> Option<String> {
     match field {
-        SyncField::Status => Some(format!("{:?}", entry.status)),
+        SyncField::Status => canonical_state(entry).value(field),
         SyncField::Score => entry.score_hundred.map(|value| value.to_string()),
         SyncField::ProgressEpisodes => entry.progress_episodes.map(|value| value.to_string()),
         SyncField::ProgressChapters => entry.progress_chapters.map(|value| value.to_string()),
@@ -751,6 +951,16 @@ fn field_value_opt(entry: &PlanningCollectionEntry, field: SyncField) -> Option<
         | SyncField::Notes
         | SyncField::Tags => Some("<protected>".to_owned()),
     }
+}
+
+fn canonical_state(entry: &PlanningCollectionEntry) -> CanonicalFieldState {
+    CanonicalFieldState::new(
+        entry.status,
+        entry.score_hundred,
+        entry.progress_episodes,
+        entry.progress_chapters,
+        entry.progress_volumes,
+    )
 }
 
 fn consensus_score(entries: &[PlanningCollectionEntry]) -> Option<u8> {

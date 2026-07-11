@@ -3,10 +3,12 @@ mod sqlite;
 
 pub use sqlite::{
     CollectionEntryDetails, ExternalIdEdgeDetails, ExternalIdEdgeInput, ExternalIdEdgeUpsertInput,
-    ManualMappingDecision, ManualMappingInput, PlanningCollectionEntry, ProviderCredentialDetails,
+    FieldObservationChangeOrigin, FieldObservationDetails, ManualMappingDecision,
+    ManualMappingInput, PlanningCollectionEntry, ProviderCredentialDetails,
     ProviderCredentialInput, ProviderCredentialRefreshAttemptDetails,
     ProviderCredentialRefreshAttemptFinalizeStatus, ProviderCredentialRefreshAttemptInput,
     ProviderCredentialRefreshAttemptStatus, ProviderItemCandidate, ProviderItemInput, SqliteStore,
     StoreError, WorkExternalId, WriteJournalCompletion, WriteJournalEntryDetails,
-    WriteJournalIntent, WriteJournalStatus,
+    WriteJournalFieldDetails, WriteJournalFieldIntent, WriteJournalIntent,
+    WriteJournalIntentOutcome, WriteJournalStatus,
 };

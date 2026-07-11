@@ -12,7 +12,7 @@ use sync_core::identity::{
     validate_legacy_ignore_entries_json, validate_legacy_manual_relations_json, AutoLinkReport,
     AutoMatchDecision,
 };
-use sync_core::model::{MediaKind, Provider};
+use sync_core::model::{MediaKind, Provider, SyncField};
 use sync_core::provider::{
     build_provider_authorization_request, build_provider_token_exchange_request,
     exchange_provider_oauth_token, parse_anilist_collection_fixture,
@@ -4995,7 +4995,13 @@ where
         let providers = conflict
             .values
             .iter()
-            .map(|value| format!("{}={}", value.provider.as_str(), value.value))
+            .map(|value| {
+                format!(
+                    "{}={}",
+                    value.provider.as_str(),
+                    text_conflict_value(conflict.field, &value.value)
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         let _ = writeln!(
@@ -5061,7 +5067,13 @@ where
         let providers = conflict
             .values
             .iter()
-            .map(|value| format!("{}={}", value.provider.as_str(), value.value))
+            .map(|value| {
+                format!(
+                    "{}={}",
+                    value.provider.as_str(),
+                    text_conflict_value(conflict.field, &value.value)
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         let _ = writeln!(
@@ -5069,6 +5081,21 @@ where
             "- preview conflict work={} field={:?} values={} reason={}",
             conflict.work_id, conflict.field, providers, conflict.reason
         );
+    }
+}
+
+fn text_conflict_value(field: SyncField, value: &str) -> String {
+    if field != SyncField::Status {
+        return value.to_owned();
+    }
+
+    match value {
+        "in_progress" => "InProgress".to_owned(),
+        "completed" => "Completed".to_owned(),
+        "paused" => "Paused".to_owned(),
+        "dropped" => "Dropped".to_owned(),
+        "planned" => "Planned".to_owned(),
+        other => other.to_owned(),
     }
 }
 

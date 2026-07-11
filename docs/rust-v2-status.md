@@ -19,6 +19,10 @@ The repository and CI use the Rust version pinned in `rust-toolchain.toml`.
 - Real HTTP transport for read-only collection refreshes.
 - Dry-run planning, conflict blocking, mock apply, and fixture read-back
   verification.
+- Rolling field provenance with durable pending-change markers,
+  journal-backed source attribution, stale-plan validation for both source and
+  target, snapshot-generation replay guards, and partial-write convergence
+  across three providers.
 
 ## Safety boundary
 
@@ -28,6 +32,8 @@ The repository and CI use the Rust version pinned in `rust-toolchain.toml`.
   operations yet.
 - Personal accounts must remain read-only until throwaway-account verification
   is complete and a specific live write is approved.
+- Ambiguous `attempted` journal entries fail closed instead of blindly
+  resending a write; automatic remote read-back reconciliation is not wired yet.
 
 Store local SQLite databases, auth sessions, fixture token responses, and
 credential bundles under `.sync-v2/`. The directory is ignored by Git and
@@ -45,8 +51,13 @@ npm audit --omit=dev --audit-level=high
 
 ## Known gaps
 
-- The planner does not yet use historical field observations and completed
-  write-journal evidence to identify which provider changed each field.
+- Provenance is a rolling current/previous model, not an append-only observation
+  event log, and conflicts do not yet have a user-facing resolution workflow.
+- Pending external changes settle only through exact journal-attributed peer
+  observations. Independently equal peer values are not treated as causal
+  acknowledgement, so ambiguous later divergence remains a safe conflict.
+- Crash-left `attempted` journal entries require explicit reconciliation; the
+  CLI does not yet perform the remote read-back automatically.
 - Rate-limit headers are parsed but backoff and retry are not connected to the
   live read transport.
 - Production OAuth token exchange and refresh are not wired through the CLI.
@@ -70,5 +81,5 @@ Deliver a repeatable read-only three-provider dry run:
 4. Import local identity datasets and auto-link high-confidence entries.
 5. Review JSON actions, conflicts, unmatched entries, and unsupported fields.
 
-Historical field observations and journal-aware planning are the next core
-correctness slice before any live write transport is enabled.
+Automatic ambiguous-write reconciliation and provider-aware retry/backoff are
+the next core correctness slices before any live write transport is enabled.

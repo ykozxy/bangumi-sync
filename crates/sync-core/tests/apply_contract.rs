@@ -11,7 +11,8 @@ use sync_core::provider::{
     ProviderRefreshTokenState, ProviderWriteRequest, ProviderWriteRequestMethod,
 };
 use sync_core::store::{
-    ExternalIdEdgeInput, ProviderCredentialInput, SqliteStore, WriteJournalStatus,
+    ExternalIdEdgeInput, FieldObservationChangeOrigin, ProviderCredentialInput, SqliteStore,
+    StoreError, WriteJournalStatus,
 };
 use sync_core::sync::{
     apply_plan_with_writer, apply_plan_with_writer_and_deferred_verifier,
@@ -64,6 +65,645 @@ fn mock_apply_records_successful_write_journal_entry() {
         .starts_with("fnv1a64:"));
     assert_eq!(journals[0].result_status, WriteJournalStatus::Succeeded);
     assert!(journals[0].completed_at.is_some());
+    let journal_fields = store
+        .write_journal_fields(
+            "fixture-account",
+            Provider::AniList,
+            &journals[0].operation_id,
+        )
+        .expect("journal field lookup should work");
+    assert_eq!(journal_fields.len(), 1);
+    assert_eq!(journal_fields[0].field, SyncField::Score);
+    assert_eq!(journal_fields[0].source_provider, Provider::Bangumi);
+    assert_eq!(journal_fields[0].target_provider_entry_id, "1");
+    assert_eq!(journal_fields[0].basis_observation_version, Some(1));
+    assert_eq!(journal_fields[0].basis_snapshot_generation, 1);
+    assert_ne!(
+        journal_fields[0].before_value_hash,
+        journal_fields[0].expected_value_hash
+    );
+}
+
+#[test]
+fn apply_rejects_stale_plan_before_writer_or_journal_write() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let changed_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":80,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_target)
+        .expect("changed target snapshot should import");
+
+    let mut writer = RecordingWriter::default();
+    let error = apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect_err("stale plan must fail closed");
+
+    assert_eq!(
+        error,
+        ApplyError::Store(StoreError::StaleWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id: "1".to_owned(),
+            field: SyncField::Score,
+        })
+    );
+    assert!(writer.calls.is_empty());
+    assert!(store
+        .write_journal_entries("fixture-account", Provider::AniList)
+        .expect("journal lookup should work")
+        .is_empty());
+}
+
+#[test]
+fn apply_rejects_plan_when_source_changed_after_planning() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let changed_source = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":9,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed source fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_source)
+        .expect("changed source snapshot should import");
+
+    let mut writer = RecordingWriter::default();
+    let error = apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect_err("stale source must fail closed");
+
+    assert_eq!(
+        error,
+        ApplyError::Store(StoreError::StaleWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id: "1".to_owned(),
+            field: SyncField::Score,
+        })
+    );
+    assert!(writer.calls.is_empty());
+    assert!(store
+        .write_journal_entries("fixture-account", Provider::AniList)
+        .expect("journal lookup should work")
+        .is_empty());
+}
+
+#[test]
+fn apply_rejects_add_plan_when_target_identity_edge_was_remapped() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    let original_work_id = store
+        .create_identity_work(MediaKind::Anime, "original work")
+        .expect("original work should create");
+    store
+        .upsert_external_id_edge(ExternalIdEdgeInput {
+            work_id: original_work_id,
+            provider: Provider::Bangumi,
+            media_kind: MediaKind::Anime,
+            external_id: "253".to_owned(),
+            source: "legacy-manual".to_owned(),
+            confidence: 1000,
+            match_method: "manual".to_owned(),
+            dataset_version: None,
+        })
+        .expect("source edge should insert");
+    store
+        .upsert_external_id_edge(ExternalIdEdgeInput {
+            work_id: original_work_id,
+            provider: Provider::AniList,
+            media_kind: MediaKind::Anime,
+            external_id: "1".to_owned(),
+            source: "auto-match".to_owned(),
+            confidence: 900,
+            match_method: "fts-title-exact".to_owned(),
+            dataset_version: None,
+        })
+        .expect("target edge should insert");
+    let bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &bangumi)
+        .expect("bangumi snapshot should import");
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("add plan should build");
+    assert_eq!(plan.actions().len(), 1);
+
+    let replacement_work_id = store
+        .create_identity_work(MediaKind::Anime, "replacement work")
+        .expect("replacement work should create");
+    store
+        .upsert_external_id_edge(ExternalIdEdgeInput {
+            work_id: replacement_work_id,
+            provider: Provider::AniList,
+            media_kind: MediaKind::Anime,
+            external_id: "1".to_owned(),
+            source: "legacy-manual".to_owned(),
+            confidence: 1000,
+            match_method: "manual".to_owned(),
+            dataset_version: None,
+        })
+        .expect("stronger remap should apply");
+
+    let mut writer = RecordingWriter::default();
+    let error = apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect_err("remapped target identity must fail closed");
+    assert!(matches!(
+        error,
+        ApplyError::Store(StoreError::StaleWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id,
+            ..
+        }) if target_provider_entry_id == "1"
+    ));
+    assert!(writer.calls.is_empty());
+}
+
+#[test]
+fn successful_add_replay_rejects_newer_snapshot_that_still_has_no_target() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+    let bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &bangumi)
+        .expect("bangumi snapshot should import");
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("add plan should build");
+    let mut first_writer = RecordingWriter::default();
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut first_writer)
+        .expect("first add should succeed");
+
+    let missing_target_snapshot = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("empty anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &missing_target_snapshot)
+        .expect("newer empty target snapshot should import");
+
+    let mut replay_writer = RecordingWriter::default();
+    let error = apply_plan_with_writer(&store, "fixture-account", &plan, &mut replay_writer)
+        .expect_err("newer missing snapshot requires reconciliation");
+    assert!(matches!(
+        error,
+        ApplyError::Store(StoreError::StaleWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id,
+            ..
+        }) if target_provider_entry_id == "1"
+    ));
+    assert!(replay_writer.calls.is_empty());
+
+    let later_external_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("later external target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &later_external_target)
+        .expect("later external target should import");
+    let target = store
+        .collection_entry_details("fixture-account", Provider::AniList, MediaKind::Anime, "1")
+        .expect("target lookup should work")
+        .expect("target should now exist");
+    let observations = store
+        .field_observations(target.id)
+        .expect("target observations should load");
+    for field in [
+        SyncField::Status,
+        SyncField::Score,
+        SyncField::ProgressEpisodes,
+    ] {
+        let observation = observations
+            .get(&field)
+            .expect("written field observation should exist");
+        assert_eq!(
+            observation.change_origin,
+            FieldObservationChangeOrigin::Initial
+        );
+        assert_eq!(observation.attributed_write_journal_field_id, None);
+    }
+}
+
+#[test]
+fn succeeded_write_is_attributed_on_next_snapshot_refresh() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let mut writer = RecordingWriter::default();
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect("mock apply should succeed");
+
+    let refreshed_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("refreshed target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &refreshed_target)
+        .expect("refreshed target should import");
+
+    let entry = store
+        .collection_entry_details("fixture-account", Provider::AniList, MediaKind::Anime, "1")
+        .expect("entry lookup should work")
+        .expect("target entry should exist");
+    let observations = store
+        .field_observations(entry.id)
+        .expect("field observations should load");
+    let score = observations
+        .get(&SyncField::Score)
+        .expect("score observation should exist");
+    assert_eq!(score.observation_version, 2);
+    assert_eq!(score.change_origin, FieldObservationChangeOrigin::ToolWrite);
+    assert_eq!(score.attributed_source_provider, Some(Provider::Bangumi));
+    assert!(score.attributed_write_journal_field_id.is_some());
+
+    let journal = store
+        .write_journal_entries("fixture-account", Provider::AniList)
+        .expect("journal lookup should work")
+        .pop()
+        .expect("journal should exist");
+    let field = store
+        .write_journal_fields("fixture-account", Provider::AniList, &journal.operation_id)
+        .expect("journal fields should load")
+        .pop()
+        .expect("score journal field should exist");
+    assert_eq!(field.attributed_collection_entry_id, Some(entry.id));
+    assert_eq!(field.attributed_observation_version, Some(2));
+}
+
+#[test]
+fn succeeded_write_is_attributed_after_intermediate_unchanged_snapshot() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let mut writer = RecordingWriter::default();
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect("mock apply should succeed");
+
+    let still_stale_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":0,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("stale target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &still_stale_target)
+        .expect("intermediate stale snapshot should import");
+
+    let refreshed_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("refreshed target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &refreshed_target)
+        .expect("refreshed target should import");
+
+    let entry = store
+        .collection_entry_details("fixture-account", Provider::AniList, MediaKind::Anime, "1")
+        .expect("entry lookup should work")
+        .expect("target entry should exist");
+    let score = store
+        .field_observations(entry.id)
+        .expect("field observations should load")
+        .remove(&SyncField::Score)
+        .expect("score observation should exist");
+    assert_eq!(score.observation_version, 3);
+    assert_eq!(score.last_changed_observation_version, 3);
+    assert_eq!(score.change_origin, FieldObservationChangeOrigin::ToolWrite);
+    assert_eq!(score.attributed_source_provider, Some(Provider::Bangumi));
+}
+
+#[test]
+fn consumed_successful_replay_rejects_later_target_rollback() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let mut first_writer = RecordingWriter::default();
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut first_writer)
+        .expect("first apply should succeed");
+
+    let confirmed_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("confirmed target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &confirmed_target)
+        .expect("confirmed target should import");
+    let rolled_back_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":0,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("rolled back target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &rolled_back_target)
+        .expect("rolled back target should import");
+
+    let mut replay_writer = RecordingWriter::default();
+    let error = apply_plan_with_writer(&store, "fixture-account", &plan, &mut replay_writer)
+        .expect_err("consumed replay must not hide later rollback");
+    assert_eq!(
+        error,
+        ApplyError::Store(StoreError::StaleWriteJournalIntent {
+            provider: Provider::AniList,
+            target_provider_entry_id: "1".to_owned(),
+            field: SyncField::Score,
+        })
+    );
+    assert!(replay_writer.calls.is_empty());
+}
+
+#[test]
+fn ten_point_score_journal_attribution_converges_without_reverse_write() {
+    let store = seeded_bangumi_missing_rounding_score_store();
+    let providers = [Provider::AniList, Provider::Bangumi];
+    let plan = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+        .expect("plan should build");
+    let mut writer = RecordingWriter::default();
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect("mock apply should succeed");
+
+    let rounded_target = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":9,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("rounded target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &rounded_target)
+        .expect("rounded target should import");
+
+    let target = store
+        .collection_entry_details(
+            "fixture-account",
+            Provider::Bangumi,
+            MediaKind::Anime,
+            "253",
+        )
+        .expect("target lookup should work")
+        .expect("target should exist");
+    let score = store
+        .field_observations(target.id)
+        .expect("target observations should load")
+        .remove(&SyncField::Score)
+        .expect("score observation should exist");
+    assert_eq!(score.change_origin, FieldObservationChangeOrigin::ToolWrite);
+    assert_eq!(score.attributed_source_provider, Some(Provider::AniList));
+
+    for _ in 0..2 {
+        let converged = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+            .expect("converged plan should build");
+        assert!(converged.actions().is_empty());
+        assert!(converged.conflicts().is_empty());
+        store
+            .upsert_collection_snapshot("fixture-account", &rounded_target)
+            .expect("unchanged rounded target should import");
+    }
+}
+
+#[test]
+fn failed_write_is_not_attributed_on_next_snapshot_refresh() {
+    let store = seeded_update_store();
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let mut writer = FailingWriter;
+    apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
+        .expect_err("mock write should fail");
+
+    let refreshed_target = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("refreshed target fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &refreshed_target)
+        .expect("refreshed target should import");
+
+    let entry = store
+        .collection_entry_details("fixture-account", Provider::AniList, MediaKind::Anime, "1")
+        .expect("entry lookup should work")
+        .expect("target entry should exist");
+    let observations = store
+        .field_observations(entry.id)
+        .expect("field observations should load");
+    let score = observations
+        .get(&SyncField::Score)
+        .expect("score observation should exist");
+    assert_eq!(score.change_origin, FieldObservationChangeOrigin::External);
+    assert_eq!(score.attributed_source_provider, None);
+    assert_eq!(score.attributed_write_journal_field_id, None);
+}
+
+#[test]
+fn partial_write_cycle_preserves_provenance_and_converges() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+    let work_id = store
+        .find_work_by_external_id(Provider::Bangumi, MediaKind::Anime, "253")
+        .expect("work lookup should work")
+        .expect("work should exist");
+    store
+        .upsert_external_id_edge(ExternalIdEdgeInput {
+            work_id,
+            provider: Provider::MyAnimeList,
+            media_kind: MediaKind::Anime,
+            external_id: "5".to_owned(),
+            source: "fixture".to_owned(),
+            confidence: 1000,
+            match_method: "manual-test".to_owned(),
+            dataset_version: None,
+        })
+        .expect("myanimelist edge should insert");
+
+    let baseline_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":7,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline bangumi fixture should parse");
+    let baseline_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":70,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline anilist fixture should parse");
+    let baseline_mal = parse_myanimelist_collection_fixture(
+        r#"{"data":[{"node":{"id":5,"media_type":"anime"},"list_status":{"status":"completed","score":7,"num_episodes_watched":26}}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline myanimelist fixture should parse");
+    for snapshot in [&baseline_bangumi, &baseline_anilist, &baseline_mal] {
+        store
+            .upsert_collection_snapshot("fixture-account", snapshot)
+            .expect("baseline snapshot should import");
+    }
+
+    let changed_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("changed bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("unchanged anilist snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_mal)
+        .expect("unchanged myanimelist snapshot should import");
+
+    let providers = [Provider::Bangumi, Provider::AniList, Provider::MyAnimeList];
+    let first_plan = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+        .expect("first plan should build");
+    assert!(first_plan.conflicts().is_empty());
+    assert_eq!(first_plan.actions().len(), 2);
+    assert!(first_plan
+        .actions()
+        .iter()
+        .all(|action| action.reason.contains("local-history")));
+
+    let mut partial_writer = FailAfterWriter::new(1);
+    let error = apply_plan_with_writer(&store, "fixture-account", &first_plan, &mut partial_writer)
+        .expect_err("second provider write should fail");
+    assert!(matches!(
+        error,
+        ApplyError::Provider {
+            provider: Provider::MyAnimeList,
+            ..
+        }
+    ));
+    assert_eq!(
+        partial_writer.calls,
+        vec![Provider::AniList, Provider::MyAnimeList]
+    );
+
+    let refreshed_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("refreshed anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("unchanged source snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &refreshed_anilist)
+        .expect("successful target snapshot should import");
+
+    let remaining_plan = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+        .expect("remaining plan should build");
+    assert!(remaining_plan.conflicts().is_empty());
+    assert_eq!(remaining_plan.actions().len(), 1);
+    assert_eq!(
+        remaining_plan.actions()[0].source_provider,
+        Provider::Bangumi
+    );
+    assert_eq!(
+        remaining_plan.actions()[0].target_provider,
+        Provider::MyAnimeList
+    );
+    assert_eq!(
+        remaining_plan.actions()[0].field_updates,
+        vec![SyncField::Score]
+    );
+    assert!(remaining_plan.actions()[0].reason.contains("local-history"));
+
+    let mut finishing_writer = RecordingWriter::default();
+    apply_plan_with_writer(
+        &store,
+        "fixture-account",
+        &remaining_plan,
+        &mut finishing_writer,
+    )
+    .expect("remaining write should succeed");
+    assert_eq!(
+        finishing_writer.calls,
+        vec![(
+            "fixture-account".to_owned(),
+            Provider::MyAnimeList,
+            "5".to_owned()
+        )]
+    );
+
+    let refreshed_mal = parse_myanimelist_collection_fixture(
+        r#"{"data":[{"node":{"id":5,"media_type":"anime"},"list_status":{"status":"completed","score":10,"num_episodes_watched":26}}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("refreshed myanimelist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &refreshed_mal)
+        .expect("remaining target snapshot should import");
+
+    let converged_plan = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+        .expect("converged plan should build");
+    assert!(converged_plan.actions().is_empty());
+    assert!(converged_plan.conflicts().is_empty());
+
+    let later_mal_change = parse_myanimelist_collection_fixture(
+        r#"{"data":[{"node":{"id":5,"media_type":"anime"},"list_status":{"status":"completed","score":9,"num_episodes_watched":26}}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("later myanimelist change should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &later_mal_change)
+        .expect("later myanimelist change should import");
+    let next_plan = plan_dry_run(&store, "fixture-account", MediaKind::Anime, &providers)
+        .expect("next change plan should build");
+    assert!(next_plan.conflicts().is_empty());
+    assert_eq!(next_plan.actions().len(), 2);
+    assert!(next_plan.actions().iter().all(|action| {
+        action.source_provider == Provider::MyAnimeList
+            && action.field_updates == vec![SyncField::Score]
+            && action.reason.contains("local-history")
+    }));
 }
 
 #[test]
@@ -145,6 +785,46 @@ fn apply_with_post_write_verifier_records_success_after_matching_state() {
         .expect("journal lookup should work");
     assert_eq!(journals.len(), 1);
     assert_eq!(journals[0].result_status, WriteJournalStatus::Succeeded);
+}
+
+#[test]
+fn apply_with_post_write_verifier_accepts_canonical_status_value() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+    let bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &bangumi)
+        .expect("bangumi snapshot should import");
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+    let action = &plan.actions()[0];
+    assert!(action.field_updates.contains(&SyncField::Status));
+
+    let mut writer = RecordingWriter::default();
+    let mut verifier = SequencePostWriteVerifier::new(vec![Ok(ProviderPostWriteState::Found(
+        post_write_entry_from_action(action),
+    ))]);
+    let summary = apply_plan_with_writer_and_verifier(
+        &store,
+        "fixture-account",
+        &plan,
+        &mut writer,
+        &mut verifier,
+    )
+    .expect("canonical status should verify");
+
+    assert_eq!(summary.succeeded, 1);
+    assert_eq!(summary.post_write_verified, 1);
 }
 
 #[test]
@@ -640,7 +1320,7 @@ fn mock_apply_rejects_mixed_action_and_conflict_plan_before_journal_or_writer_ca
 }
 
 #[test]
-fn mock_apply_reuses_same_journal_row_for_duplicate_operation() {
+fn mock_apply_skips_already_succeeded_duplicate_operation() {
     let store = seeded_update_store();
     let plan = plan_dry_run(
         &store,
@@ -656,14 +1336,14 @@ fn mock_apply_reuses_same_journal_row_for_duplicate_operation() {
     apply_plan_with_writer(&store, "fixture-account", &plan, &mut writer)
         .expect("second mock apply should succeed");
 
-    assert_eq!(writer.calls.len(), 2);
+    assert_eq!(writer.calls.len(), 1);
     let journals = store
         .write_journal_entries("fixture-account", Provider::AniList)
         .expect("journal lookup should work");
     assert_eq!(
         journals.len(),
         1,
-        "same deterministic operation id should upsert one journal row"
+        "same deterministic operation id should keep one succeeded journal row"
     );
     assert_eq!(journals[0].result_status, WriteJournalStatus::Succeeded);
 }
@@ -1037,6 +1717,40 @@ impl ProviderWriter for FailingWriter {
         Err(ApplyError::Provider {
             provider: action.target_provider,
             message: "mock provider failure".to_owned(),
+        })
+    }
+}
+
+struct FailAfterWriter {
+    calls: Vec<Provider>,
+    successes_remaining: usize,
+}
+
+impl FailAfterWriter {
+    fn new(successes_remaining: usize) -> Self {
+        Self {
+            calls: Vec::new(),
+            successes_remaining,
+        }
+    }
+}
+
+impl ProviderWriter for FailAfterWriter {
+    fn apply_collection_action(
+        &mut self,
+        _account_id: &str,
+        action: &PlannedAction,
+    ) -> Result<ProviderWriteResult, ApplyError> {
+        self.calls.push(action.target_provider);
+        if self.successes_remaining == 0 {
+            return Err(ApplyError::Provider {
+                provider: action.target_provider,
+                message: "mock provider failure after partial success".to_owned(),
+            });
+        }
+        self.successes_remaining -= 1;
+        Ok(ProviderWriteResult {
+            response_body: r#"{"ok":true}"#.to_owned(),
         })
     }
 }

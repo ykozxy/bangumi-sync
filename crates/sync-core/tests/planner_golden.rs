@@ -383,8 +383,8 @@ fn planner_uses_newer_reliable_provider_timestamp_to_resolve_disagreement() {
         vec![
             PlannedFieldChange {
                 field: SyncField::Status,
-                old_value: Some("InProgress".to_owned()),
-                new_value: "Completed".to_owned(),
+                old_value: Some("in_progress".to_owned()),
+                new_value: "completed".to_owned(),
             },
             PlannedFieldChange {
                 field: SyncField::Score,
@@ -818,6 +818,231 @@ fn planner_uses_field_level_changed_sources_when_reliable_providers_change_diffe
         }),
         "a newer MAL chapter update must not regress AniList score"
     );
+}
+
+#[test]
+fn planner_uses_local_history_for_two_providers_without_timestamps() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+
+    let baseline_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":7,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline bangumi fixture should parse");
+    let baseline_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":70,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_bangumi)
+        .expect("baseline bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("baseline anilist snapshot should import");
+
+    let changed_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("changed bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("unchanged changed-source snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("unchanged anilist snapshot should import");
+
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+
+    assert!(plan.conflicts().is_empty());
+    assert_eq!(plan.actions().len(), 1);
+    let action = &plan.actions()[0];
+    assert_eq!(action.source_provider, Provider::Bangumi);
+    assert_eq!(action.target_provider, Provider::AniList);
+    assert_eq!(action.field_updates, vec![SyncField::Score]);
+    assert_eq!(
+        action.field_changes,
+        vec![PlannedFieldChange {
+            field: SyncField::Score,
+            old_value: Some("70".to_owned()),
+            new_value: "100".to_owned(),
+        }]
+    );
+    assert!(action.reason.contains("local-history"));
+}
+
+#[test]
+fn planner_fails_closed_when_two_providers_both_changed_the_same_field() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+
+    let baseline_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":7,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline bangumi fixture should parse");
+    let baseline_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":70,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_bangumi)
+        .expect("baseline bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("baseline anilist snapshot should import");
+
+    let changed_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed bangumi fixture should parse");
+    let changed_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":90,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("changed bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_anilist)
+        .expect("changed anilist snapshot should import");
+
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+
+    assert!(plan.actions().is_empty());
+    assert_eq!(plan.conflicts().len(), 1);
+    assert_eq!(plan.conflicts()[0].field, SyncField::Score);
+}
+
+#[test]
+fn planner_does_not_treat_a_stale_equal_peer_as_change_acknowledgement() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+
+    let initial_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":7,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("initial bangumi fixture should parse");
+    let stale_equal_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("stale equal anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &initial_bangumi)
+        .expect("initial bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &stale_equal_anilist)
+        .expect("stale equal anilist snapshot should import");
+
+    let changed_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_bangumi)
+        .expect("changed bangumi snapshot should import");
+
+    let changed_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":70,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("changed anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &changed_anilist)
+        .expect("changed anilist snapshot should import");
+
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::Bangumi, Provider::AniList],
+    )
+    .expect("plan should build");
+
+    assert!(plan.actions().is_empty());
+    assert_eq!(plan.conflicts().len(), 1);
+    assert_eq!(plan.conflicts()[0].field, SyncField::Score);
+}
+
+#[test]
+fn planner_blocks_unrepresentable_optional_clear_instead_of_restoring_old_value() {
+    let store = SqliteStore::open_in_memory().expect("store should open");
+    import_legacy_manual_relations(&store, MediaKind::Anime, "[[253, 1]]")
+        .expect("manual relation import should work");
+
+    let baseline_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":10,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline bangumi fixture should parse");
+    let baseline_anilist = parse_anilist_collection_fixture(
+        r#"{"data":{"MediaListCollection":{"lists":[{"entries":[{"mediaId":1,"media":{"type":"ANIME"},"status":"COMPLETED","score":100,"progress":26,"progressVolumes":null}]}]}}}"#,
+        MediaKind::Anime,
+    )
+    .expect("baseline anilist fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_bangumi)
+        .expect("baseline bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("baseline anilist snapshot should import");
+
+    let cleared_bangumi = parse_bangumi_collection_fixture(
+        r#"{"data":[{"subject_id":253,"subject_type":"anime","collection_type":"collect","rate":0,"ep_status":26,"vol_status":0}]}"#,
+        MediaKind::Anime,
+    )
+    .expect("cleared bangumi fixture should parse");
+    store
+        .upsert_collection_snapshot("fixture-account", &cleared_bangumi)
+        .expect("cleared bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &cleared_bangumi)
+        .expect("unchanged cleared bangumi snapshot should import");
+    store
+        .upsert_collection_snapshot("fixture-account", &baseline_anilist)
+        .expect("unchanged anilist snapshot should import");
+
+    let plan = plan_dry_run(
+        &store,
+        "fixture-account",
+        MediaKind::Anime,
+        &[Provider::AniList, Provider::Bangumi],
+    )
+    .expect("plan should build");
+
+    assert!(plan.actions().is_empty());
+    assert_eq!(plan.conflicts().len(), 1);
+    assert_eq!(plan.conflicts()[0].field, SyncField::Score);
+    assert!(plan.conflicts()[0]
+        .values
+        .iter()
+        .any(|value| value.value == "<unset>"));
 }
 
 #[test]

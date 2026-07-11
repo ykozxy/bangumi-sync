@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde_json::json;
 
-use crate::model::{CollectionEntry, CollectionStatus, MediaKind, Provider, SyncField};
+use crate::model::{
+    stable_hash, CanonicalFieldState, CollectionEntry, CollectionStatus, MediaKind, Provider,
+    SyncField, MISSING_ENTRY_VALUE, UNSET_FIELD_VALUE,
+};
 use crate::provider::{
     authorize_provider_write_request, build_provider_write_request,
     AuthorizedProviderReadTransport, AuthorizedProviderWriteTransport, ProviderAuthBootstrapMode,
@@ -10,7 +13,8 @@ use crate::provider::{
     ProviderWriteRequestMethod,
 };
 use crate::store::{
-    SqliteStore, StoreError, WriteJournalCompletion, WriteJournalIntent, WriteJournalStatus,
+    SqliteStore, StoreError, WriteJournalCompletion, WriteJournalFieldIntent, WriteJournalIntent,
+    WriteJournalIntentOutcome, WriteJournalStatus,
 };
 
 use super::collection_read::{
@@ -462,12 +466,14 @@ where
         let request_body = writer.journal_request_body(action);
         let request_hash = stable_hash(&request_body);
         let operation_id = operation_id_for_action(action, &request_hash);
-        store.record_write_journal_intent(WriteJournalIntent {
-            provider: action.target_provider,
-            account_id: account_id.to_owned(),
-            operation_id: operation_id.clone(),
-            request_body,
-        })?;
+        let journal_outcome = store.record_write_journal_intent(
+            write_journal_intent_for_action(account_id, action, operation_id.clone(), request_body),
+        )?;
+        if journal_outcome == WriteJournalIntentOutcome::AlreadySucceeded {
+            summary.succeeded += 1;
+            summary.post_write_skipped += 1;
+            continue;
+        }
 
         match writer.apply_collection_action(account_id, action) {
             Ok(result) => {
@@ -548,12 +554,14 @@ where
         let request_body = writer.journal_request_body(action);
         let request_hash = stable_hash(&request_body);
         let operation_id = operation_id_for_action(action, &request_hash);
-        store.record_write_journal_intent(WriteJournalIntent {
-            provider: action.target_provider,
-            account_id: account_id.to_owned(),
-            operation_id: operation_id.clone(),
-            request_body,
-        })?;
+        let journal_outcome = store.record_write_journal_intent(
+            write_journal_intent_for_action(account_id, action, operation_id.clone(), request_body),
+        )?;
+        if journal_outcome == WriteJournalIntentOutcome::AlreadySucceeded {
+            summary.succeeded += 1;
+            summary.post_write_skipped += 1;
+            continue;
+        }
 
         match writer.apply_collection_action(account_id, action) {
             Ok(result) => pending_writes.push(PendingProviderWrite {
@@ -735,78 +743,34 @@ fn verify_post_write_state(
 }
 
 fn expected_post_write_read_back_field_value(action: &PlannedAction, field: SyncField) -> String {
-    let expected = expected_post_write_field_value(action, field);
-    if field == SyncField::Score && provider_reads_score_as_ten_point(action.target_provider) {
-        return expected
-            .parse::<u8>()
-            .map(score_hundred_to_ten_point_read_back)
-            .map(|value| value.to_string())
-            .unwrap_or(expected);
-    }
-
-    expected
-}
-
-fn expected_post_write_field_value(action: &PlannedAction, field: SyncField) -> String {
-    action
-        .field_changes
-        .iter()
-        .find(|change| change.field == field)
-        .map(|change| change.new_value.clone())
-        .unwrap_or_else(|| planned_action_field_value(action, field))
-}
-
-fn planned_action_field_value(action: &PlannedAction, field: SyncField) -> String {
-    match field {
-        SyncField::Status => format!("{:?}", action.status),
-        SyncField::Score => optional_u8_field_value(action.score_hundred),
-        SyncField::ProgressEpisodes => optional_u32_field_value(action.progress_episodes),
-        SyncField::ProgressChapters => optional_u32_field_value(action.progress_chapters),
-        SyncField::ProgressVolumes => optional_u32_field_value(action.progress_volumes),
-        SyncField::RepeatCount
-        | SyncField::StartedAt
-        | SyncField::CompletedAt
-        | SyncField::Notes
-        | SyncField::Tags => "<protected>".to_owned(),
-    }
+    action_field_state(action)
+        .target_value(action.target_provider, field)
+        .unwrap_or_else(|| "<protected>".to_owned())
 }
 
 fn post_write_entry_field_value(
     entry: &ProviderPostWriteEntry,
     field: SyncField,
 ) -> Option<String> {
-    match field {
-        SyncField::Status => Some(format!("{:?}", entry.status)),
-        SyncField::Score => entry.score_hundred.map(|value| value.to_string()),
-        SyncField::ProgressEpisodes => entry.progress_episodes.map(|value| value.to_string()),
-        SyncField::ProgressChapters => entry.progress_chapters.map(|value| value.to_string()),
-        SyncField::ProgressVolumes => entry.progress_volumes.map(|value| value.to_string()),
-        SyncField::RepeatCount
-        | SyncField::StartedAt
-        | SyncField::CompletedAt
-        | SyncField::Notes
-        | SyncField::Tags => Some("<protected>".to_owned()),
-    }
+    CanonicalFieldState::new(
+        entry.status,
+        entry.score_hundred,
+        entry.progress_episodes,
+        entry.progress_chapters,
+        entry.progress_volumes,
+    )
+    .value(field)
+    .or_else(|| Some("<protected>".to_owned()))
 }
 
-fn optional_u8_field_value(value: Option<u8>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<unset>".to_owned())
-}
-
-fn optional_u32_field_value(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<unset>".to_owned())
-}
-
-fn provider_reads_score_as_ten_point(provider: Provider) -> bool {
-    matches!(provider, Provider::Bangumi | Provider::MyAnimeList)
-}
-
-fn score_hundred_to_ten_point_read_back(score_hundred: u8) -> u8 {
-    (((u16::from(score_hundred) + 5) / 10).min(10) * 10) as u8
+fn action_field_state(action: &PlannedAction) -> CanonicalFieldState {
+    CanonicalFieldState::new(
+        action.status,
+        action.score_hundred,
+        action.progress_episodes,
+        action.progress_chapters,
+        action.progress_volumes,
+    )
 }
 
 fn post_write_verification_body(action: &PlannedAction, entry: &ProviderPostWriteEntry) -> String {
@@ -852,6 +816,55 @@ fn operation_id_for_action(action: &PlannedAction, request_hash: &str) -> String
         fields,
         request_hash
     )
+}
+
+fn write_journal_intent_for_action(
+    account_id: &str,
+    action: &PlannedAction,
+    operation_id: String,
+    request_body: String,
+) -> WriteJournalIntent {
+    let state = action_field_state(action);
+    let fields = action
+        .field_updates
+        .iter()
+        .map(|field| {
+            let before_value = if action.kind == PlannedActionKind::AddEntry {
+                MISSING_ENTRY_VALUE
+            } else {
+                action
+                    .field_changes
+                    .iter()
+                    .find(|change| change.field == *field)
+                    .and_then(|change| change.old_value.as_deref())
+                    .unwrap_or(UNSET_FIELD_VALUE)
+            };
+            let source_value = state
+                .value(*field)
+                .expect("applicable plan fields have canonical values");
+            let expected_value = state
+                .target_value(action.target_provider, *field)
+                .expect("applicable plan fields have canonical target values");
+            WriteJournalFieldIntent {
+                field: *field,
+                before_value_hash: stable_hash(before_value),
+                source_value_hash: stable_hash(&source_value),
+                expected_value_hash: stable_hash(&expected_value),
+            }
+        })
+        .collect();
+
+    WriteJournalIntent {
+        provider: action.target_provider,
+        account_id: account_id.to_owned(),
+        operation_id,
+        request_body,
+        work_id: action.work_id,
+        source_provider: action.source_provider,
+        media_kind: action.media_kind,
+        target_provider_entry_id: action.target_provider_entry_id.clone(),
+        fields,
+    }
 }
 
 fn request_body_for_action(action: &PlannedAction) -> String {
@@ -1026,17 +1039,6 @@ fn provider_auth_bootstrap_mode_as_str(mode: ProviderAuthBootstrapMode) -> &'sta
         ProviderAuthBootstrapMode::LocalCallback => "local_callback",
         ProviderAuthBootstrapMode::ManualPin => "manual_pin",
     }
-}
-
-fn stable_hash(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-
-    format!("fnv1a64:{hash:016x}")
 }
 
 #[cfg(test)]

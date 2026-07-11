@@ -1,8 +1,11 @@
-use std::{fmt, path::Path};
+use std::{collections::HashMap, fmt, path::Path};
 
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
 
-use crate::model::{CollectionStatus, MediaKind, Provider};
+use crate::model::{
+    stable_hash, CanonicalFieldState, CollectionStatus, MediaKind, Provider, SyncField,
+    MISSING_ENTRY_VALUE, UNSET_FIELD_VALUE,
+};
 use crate::provider::{
     provider_credential_capability, BangumiEpisodeCollectionSnapshot, ProviderAuthBootstrapMode,
     ProviderAuthFlow, ProviderCollectionSnapshot, ProviderCredentialExchangeResult,
@@ -33,6 +36,15 @@ pub enum StoreError {
     InvalidProviderCredential {
         provider: Provider,
         reason: String,
+    },
+    StaleWriteJournalIntent {
+        provider: Provider,
+        target_provider_entry_id: String,
+        field: SyncField,
+    },
+    AmbiguousWriteJournalIntent {
+        provider: Provider,
+        target_provider_entry_id: String,
     },
     Sqlite {
         message: String,
@@ -109,6 +121,7 @@ pub struct CollectionEntryDetails {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanningCollectionEntry {
+    pub collection_entry_id: i64,
     pub work_id: Option<i64>,
     pub provider: Provider,
     pub provider_entry_id: String,
@@ -119,6 +132,41 @@ pub struct PlanningCollectionEntry {
     pub progress_chapters: Option<u32>,
     pub progress_volumes: Option<u32>,
     pub provider_updated_at_epoch_secs: Option<i64>,
+    pub field_observations: HashMap<SyncField, FieldObservationDetails>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldObservationChangeOrigin {
+    Initial,
+    Unchanged,
+    External,
+    ToolWrite,
+}
+
+impl FieldObservationChangeOrigin {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Unchanged => "unchanged",
+            Self::External => "external",
+            Self::ToolWrite => "tool_write",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldObservationDetails {
+    pub field: SyncField,
+    pub observed_value_hash: String,
+    pub previous_observed_value_hash: Option<String>,
+    pub observation_version: i64,
+    pub last_changed_observation_version: i64,
+    pub change_origin: FieldObservationChangeOrigin,
+    pub attributed_write_journal_field_id: Option<i64>,
+    pub attributed_source_provider: Option<Provider>,
+    pub attributed_source_value_hash: Option<String>,
+    pub externally_cleared: bool,
+    pub pending_external_change: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +226,25 @@ pub struct WriteJournalIntent {
     pub account_id: String,
     pub operation_id: String,
     pub request_body: String,
+    pub work_id: i64,
+    pub source_provider: Provider,
+    pub media_kind: MediaKind,
+    pub target_provider_entry_id: String,
+    pub fields: Vec<WriteJournalFieldIntent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteJournalFieldIntent {
+    pub field: SyncField,
+    pub before_value_hash: String,
+    pub source_value_hash: String,
+    pub expected_value_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteJournalIntentOutcome {
+    Recorded,
+    AlreadySucceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +265,22 @@ pub struct WriteJournalEntryDetails {
     pub response_hash: Option<String>,
     pub result_status: WriteJournalStatus,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteJournalFieldDetails {
+    pub field: SyncField,
+    pub work_id: i64,
+    pub media_kind: MediaKind,
+    pub source_provider: Provider,
+    pub target_provider_entry_id: String,
+    pub basis_observation_version: Option<i64>,
+    pub basis_snapshot_generation: i64,
+    pub before_value_hash: String,
+    pub source_value_hash: String,
+    pub expected_value_hash: String,
+    pub attributed_collection_entry_id: Option<i64>,
+    pub attributed_observation_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -760,18 +843,160 @@ impl SqliteStore {
                 entry.media_kind(),
                 entry.provider_entry_id(),
             )?;
-            self.refresh_field_provenance(
-                collection_entry_id,
-                entry.provider(),
-                status,
-                score_hundred,
-                progress_episodes,
-                progress_chapters,
-                progress_volumes,
-            )?;
+            let canonical_state = CanonicalFieldState::new(
+                entry.status(),
+                entry.score().map(|score| score.as_hundred_point()),
+                progress.episodes(),
+                progress.chapters(),
+                progress.volumes(),
+            );
+            self.refresh_field_provenance(collection_entry_id, entry.provider(), canonical_state)?;
         }
 
+        self.settle_converged_external_changes(account_id, snapshot.media_kind())?;
+
+        self.connection.execute(
+            "INSERT INTO collection_snapshot_state(
+                account_id,
+                provider,
+                media_kind,
+                generation,
+                provider_payload_hash,
+                observed_at
+             )
+             VALUES (?1, ?2, ?3, 1, ?4, CURRENT_TIMESTAMP)
+             ON CONFLICT(account_id, provider, media_kind) DO UPDATE SET
+                generation = collection_snapshot_state.generation + 1,
+                provider_payload_hash = excluded.provider_payload_hash,
+                observed_at = CURRENT_TIMESTAMP",
+            params![
+                account_id,
+                snapshot.provider().as_str(),
+                snapshot.media_kind().as_str(),
+                snapshot.raw_payload_hash(),
+            ],
+        )?;
+
         Ok(snapshot.entries().len())
+    }
+
+    fn settle_converged_external_changes(
+        &self,
+        account_id: &str,
+        media_kind: MediaKind,
+    ) -> Result<(), StoreError> {
+        let pending_changes = {
+            let mut statement = self.connection.prepare(
+                "SELECT fp.id,
+                        ce.id,
+                        ce.work_id,
+                        ce.provider,
+                        fp.field_name,
+                        fp.observed_value_hash
+                 FROM field_provenance fp
+                 JOIN collection_entry ce ON ce.id = fp.collection_entry_id
+                 WHERE ce.account_id = ?1
+                   AND ce.media_kind = ?2
+                   AND ce.work_id IS NOT NULL
+                   AND fp.pending_external_change = 1
+                 ORDER BY fp.id",
+            )?;
+            let changes = statement
+                .query_map(params![account_id, media_kind.as_str()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            changes
+        };
+
+        for (
+            provenance_id,
+            source_collection_entry_id,
+            work_id,
+            source_provider,
+            field_name,
+            source_value_hash,
+        ) in pending_changes
+        {
+            let peer_values = {
+                let mut statement = self.connection.prepare(
+                    "SELECT wjf.source_provider,
+                            wjf.source_value_hash,
+                            wjf.work_id,
+                            wjf.media_kind,
+                            wjf.target_provider_entry_id,
+                            peer.provider_entry_id
+                     FROM collection_entry peer
+                     JOIN field_provenance peer_fp
+                       ON peer_fp.collection_entry_id = peer.id
+                      AND peer_fp.field_name = ?1
+                     LEFT JOIN write_journal_field wjf
+                       ON wjf.id = peer_fp.attributed_write_journal_field_id
+                     WHERE peer.account_id = ?2
+                       AND peer.work_id = ?3
+                       AND peer.media_kind = ?4
+                       AND peer.id != ?5",
+                )?;
+                let peers = statement
+                    .query_map(
+                        params![
+                            field_name,
+                            account_id,
+                            work_id,
+                            media_kind.as_str(),
+                            source_collection_entry_id,
+                        ],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<i64>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, String>(5)?,
+                            ))
+                        },
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                peers
+            };
+            let converged = !peer_values.is_empty()
+                && peer_values.iter().all(
+                    |(
+                        attributed_source_provider,
+                        attributed_source_value_hash,
+                        attributed_work_id,
+                        attributed_media_kind,
+                        attributed_target_provider_entry_id,
+                        peer_provider_entry_id,
+                    )| {
+                        attributed_source_provider.as_deref() == Some(source_provider.as_str())
+                            && attributed_source_value_hash.as_deref()
+                                == Some(source_value_hash.as_str())
+                            && *attributed_work_id == Some(work_id)
+                            && attributed_media_kind.as_deref() == Some(media_kind.as_str())
+                            && attributed_target_provider_entry_id.as_deref()
+                                == Some(peer_provider_entry_id.as_str())
+                    },
+                );
+            if converged {
+                self.connection.execute(
+                    "UPDATE field_provenance
+                     SET pending_external_change = 0
+                     WHERE id = ?1",
+                    params![provenance_id],
+                )?;
+            }
+        }
+
+        Ok(())
     }
 
     fn remove_entries_missing_from_snapshot(
@@ -1109,13 +1334,66 @@ impl SqliteStore {
         Ok(fields)
     }
 
+    pub fn field_observations(
+        &self,
+        collection_entry_id: i64,
+    ) -> Result<HashMap<SyncField, FieldObservationDetails>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT fp.field_name,
+                    fp.observed_value_hash,
+                    fp.previous_observed_value_hash,
+                    fp.observation_version,
+                    fp.last_changed_observation_version,
+                    fp.change_origin,
+                    fp.attributed_write_journal_field_id,
+                    fp.externally_cleared,
+                    fp.pending_external_change,
+                    wjf.source_provider,
+                    wjf.source_value_hash
+             FROM field_provenance fp
+             LEFT JOIN write_journal_field wjf
+               ON wjf.id = fp.attributed_write_journal_field_id
+             WHERE fp.collection_entry_id = ?1
+             ORDER BY fp.field_name",
+        )?;
+        let observations = statement
+            .query_map(params![collection_entry_id], |row| {
+                let field_name: String = row.get(0)?;
+                let change_origin: String = row.get(5)?;
+                let attributed_source_provider: Option<String> = row.get(9)?;
+                let field = sync_field_from_str(&field_name);
+                Ok((
+                    field,
+                    FieldObservationDetails {
+                        field,
+                        observed_value_hash: row.get(1)?,
+                        previous_observed_value_hash: row.get(2)?,
+                        observation_version: row.get(3)?,
+                        last_changed_observation_version: row.get(4)?,
+                        change_origin: field_observation_change_origin_from_str(&change_origin),
+                        attributed_write_journal_field_id: row.get(6)?,
+                        externally_cleared: row.get(7)?,
+                        pending_external_change: row.get(8)?,
+                        attributed_source_provider: attributed_source_provider
+                            .as_deref()
+                            .map(provider_from_str),
+                        attributed_source_value_hash: row.get(10)?,
+                    },
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        Ok(observations)
+    }
+
     pub fn collection_entries_for_planning(
         &self,
         account_id: &str,
         media_kind: MediaKind,
     ) -> Result<Vec<PlanningCollectionEntry>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT work_id,
+            "SELECT id,
+                    work_id,
                     provider,
                     provider_entry_id,
                     media_kind,
@@ -1133,23 +1411,30 @@ impl SqliteStore {
 
         let entries = statement
             .query_map(params![account_id, media_kind.as_str()], |row| {
-                let provider: String = row.get(1)?;
-                let media_kind: String = row.get(3)?;
-                let status: String = row.get(4)?;
+                let provider: String = row.get(2)?;
+                let media_kind: String = row.get(4)?;
+                let status: String = row.get(5)?;
                 Ok(PlanningCollectionEntry {
-                    work_id: row.get(0)?,
+                    collection_entry_id: row.get(0)?,
+                    work_id: row.get(1)?,
                     provider: provider_from_str(&provider),
-                    provider_entry_id: row.get(2)?,
+                    provider_entry_id: row.get(3)?,
                     media_kind: media_kind_from_str(&media_kind),
                     status: collection_status_from_str(&status),
-                    score_hundred: optional_u8(row.get::<_, Option<i64>>(5)?),
-                    progress_episodes: optional_u32(row.get::<_, Option<i64>>(6)?),
-                    progress_chapters: optional_u32(row.get::<_, Option<i64>>(7)?),
-                    progress_volumes: optional_u32(row.get::<_, Option<i64>>(8)?),
-                    provider_updated_at_epoch_secs: row.get(9)?,
+                    score_hundred: optional_u8(row.get::<_, Option<i64>>(6)?),
+                    progress_episodes: optional_u32(row.get::<_, Option<i64>>(7)?),
+                    progress_chapters: optional_u32(row.get::<_, Option<i64>>(8)?),
+                    progress_volumes: optional_u32(row.get::<_, Option<i64>>(9)?),
+                    provider_updated_at_epoch_secs: row.get(10)?,
+                    field_observations: HashMap::new(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+
+        let mut entries = entries;
+        for entry in &mut entries {
+            entry.field_observations = self.field_observations(entry.collection_entry_id)?;
+        }
 
         Ok(entries)
     }
@@ -1181,6 +1466,29 @@ impl SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(ids)
+    }
+
+    fn collection_snapshot_generation(
+        &self,
+        account_id: &str,
+        provider: Provider,
+        media_kind: MediaKind,
+    ) -> Result<i64, StoreError> {
+        let generation = self
+            .connection
+            .query_row(
+                "SELECT generation
+                 FROM collection_snapshot_state
+                 WHERE account_id = ?1
+                   AND provider = ?2
+                   AND media_kind = ?3",
+                params![account_id, provider.as_str(), media_kind.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+
+        Ok(generation)
     }
 
     pub fn search_provider_items(
@@ -1320,34 +1628,462 @@ impl SqliteStore {
         Ok(decision.map(|value| manual_mapping_decision_from_str(&value)))
     }
 
-    pub fn record_write_journal_intent(&self, input: WriteJournalIntent) -> Result<(), StoreError> {
-        self.connection.execute(
-            "INSERT INTO write_journal(
-                provider,
-                account_id,
-                operation_id,
-                request_hash,
-                response_hash,
-                completed_at,
-                result_status
-             )
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5)
-             ON CONFLICT(provider, account_id, operation_id) DO UPDATE SET
-                request_hash = excluded.request_hash,
-                response_hash = NULL,
-                started_at = CURRENT_TIMESTAMP,
-                completed_at = NULL,
-                result_status = excluded.result_status",
-            params![
-                input.provider.as_str(),
-                input.account_id,
-                input.operation_id,
-                stable_hash(&input.request_body),
-                WriteJournalStatus::Attempted.as_str(),
-            ],
-        )?;
+    pub fn record_write_journal_intent(
+        &self,
+        input: WriteJournalIntent,
+    ) -> Result<WriteJournalIntentOutcome, StoreError> {
+        self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let request_hash = stable_hash(&input.request_body);
+            let existing = self
+                .connection
+                .query_row(
+                    "SELECT id, request_hash, result_status
+                     FROM write_journal
+                     WHERE provider = ?1
+                       AND account_id = ?2
+                       AND operation_id = ?3",
+                    params![
+                        input.provider.as_str(),
+                        input.account_id,
+                        input.operation_id,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let existing_request_matches = existing
+                .as_ref()
+                .is_none_or(|(_, existing_request_hash, _)| existing_request_hash == &request_hash);
+            if !existing_request_matches {
+                return Err(StoreError::AmbiguousWriteJournalIntent {
+                    provider: input.provider,
+                    target_provider_entry_id: input.target_provider_entry_id.clone(),
+                });
+            }
+            let already_succeeded = existing
+                .as_ref()
+                .is_some_and(|(_, _, status)| status == WriteJournalStatus::Succeeded.as_str());
+            let ambiguous_attempt = existing
+                .as_ref()
+                .is_some_and(|(_, _, status)| status == WriteJournalStatus::Attempted.as_str());
+            if ambiguous_attempt {
+                return Err(StoreError::AmbiguousWriteJournalIntent {
+                    provider: input.provider,
+                    target_provider_entry_id: input.target_provider_entry_id.clone(),
+                });
+            }
 
-        Ok(())
+            let replay_fields = if let Some((journal_id, _, _)) = existing.as_ref() {
+                let mut statement = self.connection.prepare(
+                    "SELECT field_name,
+                            basis_observation_version,
+                            basis_snapshot_generation,
+                            before_value_hash,
+                            source_value_hash,
+                            expected_value_hash,
+                            consumed_at IS NOT NULL
+                     FROM write_journal_field
+                     WHERE write_journal_id = ?1",
+                )?;
+                let fields = statement
+                    .query_map(params![journal_id], |row| {
+                        Ok((
+                            sync_field_from_str(&row.get::<_, String>(0)?),
+                            (
+                                row.get::<_, Option<i64>>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, String>(5)?,
+                                row.get::<_, bool>(6)?,
+                            ),
+                        ))
+                    })?
+                    .collect::<Result<HashMap<_, _>, _>>()?;
+                fields
+            } else {
+                HashMap::new()
+            };
+
+            if already_succeeded
+                && input.fields.iter().any(|field| {
+                    replay_fields.get(&field.field).is_none_or(
+                        |(_, _, before_hash, source_hash, expected_hash, _)| {
+                            before_hash != &field.before_value_hash
+                                || source_hash != &field.source_value_hash
+                                || expected_hash != &field.expected_value_hash
+                        },
+                    )
+                })
+            {
+                return Err(StoreError::AmbiguousWriteJournalIntent {
+                    provider: input.provider,
+                    target_provider_entry_id: input.target_provider_entry_id.clone(),
+                });
+            }
+
+            let target_entry = self
+                .connection
+                .query_row(
+                    "SELECT id, work_id
+                     FROM collection_entry
+                     WHERE account_id = ?1
+                       AND provider = ?2
+                       AND media_kind = ?3
+                       AND provider_entry_id = ?4",
+                    params![
+                        input.account_id,
+                        input.provider.as_str(),
+                        input.media_kind.as_str(),
+                        input.target_provider_entry_id,
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .optional()?;
+            let missing_entry_hash = stable_hash(MISSING_ENTRY_VALUE);
+            let is_add = input
+                .fields
+                .iter()
+                .all(|field| field.before_value_hash == missing_entry_hash);
+            let mixes_add_and_update_fields = input
+                .fields
+                .iter()
+                .any(|field| field.before_value_hash == missing_entry_hash)
+                && !is_add;
+            let fallback_field = input
+                .fields
+                .first()
+                .map(|field| field.field)
+                .unwrap_or(SyncField::Status);
+            let current_snapshot_generation = self.collection_snapshot_generation(
+                &input.account_id,
+                input.provider,
+                input.media_kind,
+            )?;
+            if mixes_add_and_update_fields {
+                return Err(StoreError::StaleWriteJournalIntent {
+                    provider: input.provider,
+                    target_provider_entry_id: input.target_provider_entry_id.clone(),
+                    field: fallback_field,
+                });
+            }
+            if is_add {
+                let edge_work_id = self
+                    .connection
+                    .query_row(
+                        "SELECT work_id
+                         FROM external_id_edge
+                         WHERE provider = ?1
+                           AND media_kind = ?2
+                           AND external_id = ?3
+                           AND stale = 0",
+                        params![
+                            input.provider.as_str(),
+                            input.media_kind.as_str(),
+                            input.target_provider_entry_id,
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                if edge_work_id != Some(input.work_id) {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: fallback_field,
+                    });
+                }
+            }
+
+            let source_entry_ids = {
+                let mut statement = self.connection.prepare(
+                    "SELECT id
+                     FROM collection_entry
+                     WHERE account_id = ?1
+                       AND provider = ?2
+                       AND media_kind = ?3
+                       AND work_id = ?4
+                     ORDER BY id
+                     LIMIT 2",
+                )?;
+                let entry_ids = statement
+                    .query_map(
+                        params![
+                            input.account_id,
+                            input.source_provider.as_str(),
+                            input.media_kind.as_str(),
+                            input.work_id,
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                entry_ids
+            };
+            if source_entry_ids.len() != 1 {
+                return Err(StoreError::StaleWriteJournalIntent {
+                    provider: input.provider,
+                    target_provider_entry_id: input.target_provider_entry_id.clone(),
+                    field: fallback_field,
+                });
+            }
+            let source_entry_id = source_entry_ids[0];
+            let mut basis_versions = Vec::with_capacity(input.fields.len());
+
+            for field in &input.fields {
+                let source_observed_value_hash = self
+                    .connection
+                    .query_row(
+                        "SELECT observed_value_hash
+                         FROM field_provenance
+                         WHERE collection_entry_id = ?1
+                           AND field_name = ?2
+                           AND provider = ?3",
+                        params![
+                            source_entry_id,
+                            field.field.as_str(),
+                            input.source_provider.as_str(),
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if source_observed_value_hash.as_deref() != Some(field.source_value_hash.as_str()) {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                }
+
+                if is_add {
+                    let was_consumed = replay_fields
+                        .get(&field.field)
+                        .is_some_and(|(_, _, _, _, _, consumed)| *consumed);
+                    let Some((collection_entry_id, work_id)) = target_entry else {
+                        if already_succeeded {
+                            let replay_basis_generation = replay_fields
+                                .get(&field.field)
+                                .map(|(_, generation, _, _, _, _)| *generation);
+                            if was_consumed
+                                || replay_basis_generation != Some(current_snapshot_generation)
+                            {
+                                return Err(StoreError::StaleWriteJournalIntent {
+                                    provider: input.provider,
+                                    target_provider_entry_id: input
+                                        .target_provider_entry_id
+                                        .clone(),
+                                    field: field.field,
+                                });
+                            }
+                        }
+                        basis_versions.push(None);
+                        continue;
+                    };
+                    if !already_succeeded || work_id != Some(input.work_id) {
+                        return Err(StoreError::StaleWriteJournalIntent {
+                            provider: input.provider,
+                            target_provider_entry_id: input.target_provider_entry_id.clone(),
+                            field: field.field,
+                        });
+                    }
+                    let observation = self
+                        .connection
+                        .query_row(
+                            "SELECT observed_value_hash, observation_version
+                             FROM field_provenance
+                             WHERE collection_entry_id = ?1
+                               AND field_name = ?2
+                               AND provider = ?3",
+                            params![
+                                collection_entry_id,
+                                field.field.as_str(),
+                                input.provider.as_str(),
+                            ],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                        )
+                        .optional()?;
+                    let Some((observed_value_hash, observation_version)) = observation else {
+                        return Err(StoreError::StaleWriteJournalIntent {
+                            provider: input.provider,
+                            target_provider_entry_id: input.target_provider_entry_id.clone(),
+                            field: field.field,
+                        });
+                    };
+                    if observed_value_hash != field.expected_value_hash {
+                        return Err(StoreError::StaleWriteJournalIntent {
+                            provider: input.provider,
+                            target_provider_entry_id: input.target_provider_entry_id.clone(),
+                            field: field.field,
+                        });
+                    }
+                    basis_versions.push(Some(observation_version));
+                    continue;
+                }
+
+                let Some((collection_entry_id, work_id)) = target_entry else {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                };
+                if work_id != Some(input.work_id) {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                }
+                let observation = self
+                    .connection
+                    .query_row(
+                        "SELECT observed_value_hash, observation_version
+                         FROM field_provenance
+                         WHERE collection_entry_id = ?1
+                           AND field_name = ?2
+                           AND provider = ?3",
+                        params![
+                            collection_entry_id,
+                            field.field.as_str(),
+                            input.provider.as_str()
+                        ],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let Some((observed_value_hash, observation_version)) = observation else {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                };
+                let replay_was_consumed = replay_fields
+                    .get(&field.field)
+                    .is_some_and(|(_, _, _, _, _, consumed)| *consumed);
+                let replay_basis_observation_version = replay_fields
+                    .get(&field.field)
+                    .and_then(|(basis, _, _, _, _, _)| *basis);
+                let target_is_original_basis = observed_value_hash == field.before_value_hash;
+                let target_is_succeeded_result =
+                    already_succeeded && observed_value_hash == field.expected_value_hash;
+                if !target_is_original_basis && !target_is_succeeded_result {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                }
+                if already_succeeded
+                    && target_is_original_basis
+                    && (replay_was_consumed
+                        || replay_basis_observation_version != Some(observation_version))
+                {
+                    return Err(StoreError::StaleWriteJournalIntent {
+                        provider: input.provider,
+                        target_provider_entry_id: input.target_provider_entry_id.clone(),
+                        field: field.field,
+                    });
+                }
+                basis_versions.push(Some(observation_version));
+            }
+
+            if already_succeeded {
+                return Ok(WriteJournalIntentOutcome::AlreadySucceeded);
+            }
+
+            self.connection.execute(
+                "INSERT INTO write_journal(
+                    provider,
+                    account_id,
+                    operation_id,
+                    request_hash,
+                    response_hash,
+                    completed_at,
+                    result_status
+                 )
+                 VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5)
+                 ON CONFLICT(provider, account_id, operation_id) DO UPDATE SET
+                    request_hash = excluded.request_hash,
+                    response_hash = NULL,
+                    started_at = CURRENT_TIMESTAMP,
+                    completed_at = NULL,
+                    result_status = excluded.result_status",
+                params![
+                    input.provider.as_str(),
+                    input.account_id,
+                    input.operation_id,
+                    request_hash,
+                    WriteJournalStatus::Attempted.as_str(),
+                ],
+            )?;
+            let write_journal_id = self.connection.query_row(
+                "SELECT id
+                 FROM write_journal
+                 WHERE provider = ?1
+                   AND account_id = ?2
+                   AND operation_id = ?3",
+                params![
+                    input.provider.as_str(),
+                    input.account_id,
+                    input.operation_id,
+                ],
+                |row| row.get::<_, i64>(0),
+            )?;
+            self.connection.execute(
+                "DELETE FROM write_journal_field WHERE write_journal_id = ?1",
+                params![write_journal_id],
+            )?;
+            for (field, basis_observation_version) in
+                input.fields.iter().zip(basis_versions.into_iter())
+            {
+                self.connection.execute(
+                    "INSERT INTO write_journal_field(
+                        write_journal_id,
+                        work_id,
+                        media_kind,
+                        source_provider,
+                        target_provider_entry_id,
+                        field_name,
+                        basis_observation_version,
+                        basis_snapshot_generation,
+                        before_value_hash,
+                        source_value_hash,
+                        expected_value_hash
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        write_journal_id,
+                        input.work_id,
+                        input.media_kind.as_str(),
+                        input.source_provider.as_str(),
+                        input.target_provider_entry_id,
+                        field.field.as_str(),
+                        basis_observation_version,
+                        current_snapshot_generation,
+                        field.before_value_hash,
+                        field.source_value_hash,
+                        field.expected_value_hash,
+                    ],
+                )?;
+            }
+
+            Ok(WriteJournalIntentOutcome::Recorded)
+        })();
+
+        match result {
+            Ok(outcome) => {
+                self.connection.execute_batch("COMMIT")?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     pub fn complete_write_journal(&self, input: WriteJournalCompletion) -> Result<(), StoreError> {
@@ -1407,6 +2143,60 @@ impl SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
+    }
+
+    pub fn write_journal_fields(
+        &self,
+        account_id: &str,
+        provider: Provider,
+        operation_id: &str,
+    ) -> Result<Vec<WriteJournalFieldDetails>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT wjf.field_name,
+                    wjf.work_id,
+                    wjf.media_kind,
+                    wjf.source_provider,
+                    wjf.target_provider_entry_id,
+                    wjf.basis_observation_version,
+                    wjf.basis_snapshot_generation,
+                    wjf.before_value_hash,
+                    wjf.source_value_hash,
+                    wjf.expected_value_hash,
+                    wjf.attributed_collection_entry_id,
+                    wjf.attributed_observation_version
+             FROM write_journal_field wjf
+             JOIN write_journal wj ON wj.id = wjf.write_journal_id
+             WHERE wj.account_id = ?1
+               AND wj.provider = ?2
+               AND wj.operation_id = ?3
+             ORDER BY wjf.field_name",
+        )?;
+        let fields = statement
+            .query_map(
+                params![account_id, provider.as_str(), operation_id],
+                |row| {
+                    let field_name: String = row.get(0)?;
+                    let media_kind: String = row.get(2)?;
+                    let source_provider: String = row.get(3)?;
+                    Ok(WriteJournalFieldDetails {
+                        field: sync_field_from_str(&field_name),
+                        work_id: row.get(1)?,
+                        media_kind: media_kind_from_str(&media_kind),
+                        source_provider: provider_from_str(&source_provider),
+                        target_provider_entry_id: row.get(4)?,
+                        basis_observation_version: row.get(5)?,
+                        basis_snapshot_generation: row.get(6)?,
+                        before_value_hash: row.get(7)?,
+                        source_value_hash: row.get(8)?,
+                        expected_value_hash: row.get(9)?,
+                        attributed_collection_entry_id: row.get(10)?,
+                        attributed_observation_version: row.get(11)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(fields)
     }
 
     pub fn upsert_provider_credential(
@@ -1839,6 +2629,7 @@ impl SqliteStore {
         self.ensure_provider_credential_table()?;
         self.ensure_provider_credential_refresh_attempt_table()?;
         self.ensure_bangumi_episode_collection_table()?;
+        self.ensure_historical_planner_schema()?;
         self.ensure_store_metadata_table()?;
         self.ensure_provider_item_fts_search_text_version()?;
         Ok(())
@@ -1874,6 +2665,230 @@ impl SqliteStore {
         self.connection.execute_batch(include_str!(
             "../../migrations/0006_bangumi_episode_collection.sql"
         ))?;
+        Ok(())
+    }
+
+    fn ensure_historical_planner_schema(&self) -> Result<(), StoreError> {
+        if !self.column_exists("field_provenance", "previous_observed_value_hash")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN previous_observed_value_hash TEXT",
+                [],
+            )?;
+        }
+        if !self.column_exists("field_provenance", "observation_version")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN observation_version INTEGER NOT NULL DEFAULT 1
+                    CHECK (observation_version >= 1)",
+                [],
+            )?;
+        }
+        if !self.column_exists("field_provenance", "last_changed_observation_version")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN last_changed_observation_version INTEGER",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            "UPDATE field_provenance
+             SET last_changed_observation_version = observation_version
+             WHERE last_changed_observation_version IS NULL",
+            [],
+        )?;
+        if !self.column_exists("field_provenance", "change_origin")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN change_origin TEXT NOT NULL DEFAULT 'initial'
+                    CHECK (change_origin IN ('initial', 'unchanged', 'external', 'tool_write'))",
+                [],
+            )?;
+        }
+        if !self.column_exists("field_provenance", "attributed_write_journal_field_id")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN attributed_write_journal_field_id INTEGER",
+                [],
+            )?;
+        }
+        if !self.column_exists("field_provenance", "externally_cleared")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN externally_cleared INTEGER NOT NULL DEFAULT 0
+                    CHECK (externally_cleared IN (0, 1))",
+                [],
+            )?;
+        }
+        if !self.column_exists("field_provenance", "pending_external_change")? {
+            self.connection.execute(
+                "ALTER TABLE field_provenance
+                 ADD COLUMN pending_external_change INTEGER",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            "UPDATE field_provenance
+             SET pending_external_change = CASE
+                    WHEN change_origin = 'external'
+                     AND previous_observed_value_hash IS NOT NULL
+                     AND previous_observed_value_hash != observed_value_hash
+                    THEN 1
+                    ELSE 0
+                 END
+             WHERE pending_external_change IS NULL",
+            [],
+        )?;
+
+        self.connection.execute(
+            "UPDATE field_provenance
+             SET field_name = 'score'
+             WHERE field_name = 'score_hundred'",
+            [],
+        )?;
+
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS write_journal_field (
+                id INTEGER PRIMARY KEY,
+                write_journal_id INTEGER NOT NULL REFERENCES write_journal(id) ON DELETE CASCADE,
+                work_id INTEGER NOT NULL REFERENCES identity_work(id) ON DELETE CASCADE,
+                media_kind TEXT NOT NULL,
+                source_provider TEXT NOT NULL,
+                target_provider_entry_id TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                basis_observation_version INTEGER,
+                basis_snapshot_generation INTEGER NOT NULL,
+                before_value_hash TEXT NOT NULL,
+                source_value_hash TEXT NOT NULL,
+                expected_value_hash TEXT NOT NULL,
+                attributed_collection_entry_id INTEGER REFERENCES collection_entry(id) ON DELETE SET NULL,
+                attributed_observation_version INTEGER,
+                consumed_at TEXT,
+                UNIQUE (write_journal_id, field_name)
+             );
+             CREATE TABLE IF NOT EXISTS collection_snapshot_state (
+                account_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                media_kind TEXT NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+                provider_payload_hash TEXT NOT NULL,
+                observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (account_id, provider, media_kind)
+             );
+             CREATE INDEX IF NOT EXISTS idx_write_journal_field_journal
+                ON write_journal_field(write_journal_id);
+             CREATE INDEX IF NOT EXISTS idx_write_journal_field_target
+                ON write_journal_field(
+                    work_id,
+                    media_kind,
+                    target_provider_entry_id,
+                    field_name
+                );",
+        )?;
+
+        if !self.column_exists("write_journal_field", "source_value_hash")? {
+            self.connection.execute(
+                "ALTER TABLE write_journal_field
+                 ADD COLUMN source_value_hash TEXT",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            "UPDATE write_journal_field
+             SET source_value_hash = expected_value_hash
+             WHERE source_value_hash IS NULL",
+            [],
+        )?;
+        if !self.column_exists("write_journal_field", "basis_snapshot_generation")? {
+            self.connection.execute(
+                "ALTER TABLE write_journal_field
+                 ADD COLUMN basis_snapshot_generation INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !self.column_exists("write_journal_field", "consumed_at")? {
+            self.connection.execute(
+                "ALTER TABLE write_journal_field
+                 ADD COLUMN consumed_at TEXT",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            "UPDATE write_journal_field
+             SET consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP)
+             WHERE attributed_collection_entry_id IS NOT NULL
+                OR attributed_observation_version IS NOT NULL",
+            [],
+        )?;
+
+        self.backfill_current_field_provenance()?;
+
+        Ok(())
+    }
+
+    fn backfill_current_field_provenance(&self) -> Result<(), StoreError> {
+        let rows = {
+            let mut statement = self.connection.prepare(
+                "SELECT id,
+                        provider,
+                        status,
+                        score_hundred,
+                        progress_episodes,
+                        progress_chapters,
+                        progress_volumes
+                 FROM collection_entry
+                 ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    let provider: String = row.get(1)?;
+                    let status: String = row.get(2)?;
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        provider_from_str(&provider),
+                        CanonicalFieldState::new(
+                            collection_status_from_str(&status),
+                            optional_u8(row.get::<_, Option<i64>>(3)?),
+                            optional_u32(row.get::<_, Option<i64>>(4)?),
+                            optional_u32(row.get::<_, Option<i64>>(5)?),
+                            optional_u32(row.get::<_, Option<i64>>(6)?),
+                        ),
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        for (collection_entry_id, provider, state) in rows {
+            for field in default_writable_fields() {
+                let value_hash = state
+                    .hash(field)
+                    .expect("default-writable fields have canonical hashes");
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO field_provenance(
+                        collection_entry_id,
+                        field_name,
+                        provider,
+                        observed_value_hash,
+                        source_reliability,
+                        observation_version,
+                        last_changed_observation_version,
+                        change_origin,
+                        pending_external_change
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, ?6, 0)",
+                    params![
+                        collection_entry_id,
+                        field.as_str(),
+                        provider.as_str(),
+                        value_hash,
+                        "provider_snapshot",
+                        FieldObservationChangeOrigin::Initial.as_str(),
+                    ],
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -2034,56 +3049,21 @@ impl SqliteStore {
         Ok(id)
     }
 
-    // Keep the normalized field set explicit at the SQLite boundary. This will
-    // be replaced by historical observations when provenance becomes versioned.
-    #[allow(clippy::too_many_arguments)]
     fn refresh_field_provenance(
         &self,
         collection_entry_id: i64,
         provider: Provider,
-        status: &str,
-        score_hundred: Option<i64>,
-        progress_episodes: Option<i64>,
-        progress_chapters: Option<i64>,
-        progress_volumes: Option<i64>,
+        state: CanonicalFieldState,
     ) -> Result<(), StoreError> {
-        self.connection.execute(
-            "DELETE FROM field_provenance
-             WHERE collection_entry_id = ?1",
-            params![collection_entry_id],
-        )?;
-
-        self.upsert_field_provenance(collection_entry_id, provider, "status", status)?;
-        if let Some(value) = score_hundred {
+        for field in default_writable_fields() {
+            let observed_value_hash = state
+                .hash(field)
+                .expect("default-writable fields have canonical hashes");
             self.upsert_field_provenance(
                 collection_entry_id,
                 provider,
-                "score_hundred",
-                &value.to_string(),
-            )?;
-        }
-        if let Some(value) = progress_episodes {
-            self.upsert_field_provenance(
-                collection_entry_id,
-                provider,
-                "progress_episodes",
-                &value.to_string(),
-            )?;
-        }
-        if let Some(value) = progress_chapters {
-            self.upsert_field_provenance(
-                collection_entry_id,
-                provider,
-                "progress_chapters",
-                &value.to_string(),
-            )?;
-        }
-        if let Some(value) = progress_volumes {
-            self.upsert_field_provenance(
-                collection_entry_id,
-                provider,
-                "progress_volumes",
-                &value.to_string(),
+                field,
+                &observed_value_hash,
             )?;
         }
 
@@ -2094,33 +3074,266 @@ impl SqliteStore {
         &self,
         collection_entry_id: i64,
         provider: Provider,
-        field_name: &str,
-        observed_value: &str,
+        field: SyncField,
+        observed_value_hash: &str,
     ) -> Result<(), StoreError> {
+        let previous = self
+            .connection
+            .query_row(
+                "SELECT observed_value_hash,
+                        observation_version,
+                        last_changed_observation_version,
+                        attributed_write_journal_field_id,
+                        externally_cleared,
+                        pending_external_change
+                 FROM field_provenance
+                 WHERE collection_entry_id = ?1
+                   AND field_name = ?2
+                   AND provider = ?3",
+                params![collection_entry_id, field.as_str(), provider.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, bool>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let (
+            previous_hash,
+            previous_observation_version,
+            previous_last_changed_observation_version,
+            previous_attribution,
+            previous_externally_cleared,
+            previous_pending_external_change,
+            observation_version,
+            last_changed_observation_version,
+            default_origin,
+        ) = match previous {
+            Some((
+                previous_hash,
+                previous_version,
+                previous_last_changed_version,
+                previous_attribution,
+                previous_externally_cleared,
+                previous_pending_external_change,
+            )) => {
+                let origin = if previous_hash == observed_value_hash {
+                    FieldObservationChangeOrigin::Unchanged
+                } else {
+                    FieldObservationChangeOrigin::External
+                };
+                let observation_version = previous_version + 1;
+                let last_changed_observation_version =
+                    if origin == FieldObservationChangeOrigin::Unchanged {
+                        previous_last_changed_version
+                    } else {
+                        observation_version
+                    };
+                (
+                    Some(previous_hash),
+                    Some(previous_version),
+                    previous_last_changed_version,
+                    previous_attribution,
+                    previous_externally_cleared,
+                    previous_pending_external_change,
+                    observation_version,
+                    last_changed_observation_version,
+                    origin,
+                )
+            }
+            None => (
+                None,
+                None,
+                1,
+                None,
+                false,
+                false,
+                1,
+                1,
+                FieldObservationChangeOrigin::Initial,
+            ),
+        };
+
+        let matched_attribution = if default_origin == FieldObservationChangeOrigin::Unchanged {
+            None
+        } else {
+            self.matching_succeeded_write_journal_field(
+                collection_entry_id,
+                field,
+                previous_hash.as_deref(),
+                observed_value_hash,
+                previous_observation_version,
+                previous_last_changed_observation_version,
+            )?
+        };
+        let attribution = if default_origin == FieldObservationChangeOrigin::Unchanged {
+            previous_attribution
+        } else {
+            matched_attribution
+        };
+        let change_origin = if matched_attribution.is_some() {
+            FieldObservationChangeOrigin::ToolWrite
+        } else {
+            default_origin
+        };
+        let externally_cleared = if default_origin == FieldObservationChangeOrigin::Unchanged {
+            previous_externally_cleared
+        } else {
+            matched_attribution.is_none()
+                && previous_hash.is_some()
+                && observed_value_hash == stable_hash(UNSET_FIELD_VALUE)
+        };
+        let pending_external_change = if default_origin == FieldObservationChangeOrigin::Unchanged {
+            previous_pending_external_change
+        } else {
+            matched_attribution.is_none() && previous_hash.is_some()
+        };
+
         self.connection.execute(
             "INSERT INTO field_provenance(
                 collection_entry_id,
                 field_name,
                 provider,
                 observed_value_hash,
+                previous_observed_value_hash,
+                observation_version,
+                last_changed_observation_version,
+                change_origin,
+                attributed_write_journal_field_id,
+                externally_cleared,
+                pending_external_change,
                 source_reliability
              )
-             VALUES (?1, ?2, ?3, ?4, ?5)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(collection_entry_id, field_name, provider) DO UPDATE SET
+                previous_observed_value_hash = excluded.previous_observed_value_hash,
                 observed_value_hash = excluded.observed_value_hash,
+                observation_version = excluded.observation_version,
+                last_changed_observation_version = excluded.last_changed_observation_version,
+                change_origin = excluded.change_origin,
+                attributed_write_journal_field_id = excluded.attributed_write_journal_field_id,
+                externally_cleared = excluded.externally_cleared,
+                pending_external_change = excluded.pending_external_change,
                 observed_at = CURRENT_TIMESTAMP,
                 source_reliability = excluded.source_reliability",
             params![
                 collection_entry_id,
-                field_name,
+                field.as_str(),
                 provider.as_str(),
-                stable_hash(observed_value),
-                "fixture",
+                observed_value_hash,
+                previous_hash,
+                observation_version,
+                last_changed_observation_version,
+                change_origin.as_str(),
+                attribution,
+                externally_cleared,
+                pending_external_change,
+                "provider_snapshot",
             ],
         )?;
 
+        if let Some(write_journal_field_id) = matched_attribution {
+            self.connection.execute(
+                "UPDATE write_journal_field
+                 SET attributed_collection_entry_id = ?2,
+                     attributed_observation_version = ?3,
+                     consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP)
+                 WHERE id = ?1",
+                params![
+                    write_journal_field_id,
+                    collection_entry_id,
+                    observation_version,
+                ],
+            )?;
+        }
+
         Ok(())
     }
+
+    fn matching_succeeded_write_journal_field(
+        &self,
+        collection_entry_id: i64,
+        field: SyncField,
+        previous_observed_value_hash: Option<&str>,
+        observed_value_hash: &str,
+        previous_observation_version: Option<i64>,
+        previous_last_changed_observation_version: i64,
+    ) -> Result<Option<i64>, StoreError> {
+        let expected_before_hash = previous_observed_value_hash.unwrap_or({
+            // A missing provenance row is only attributable to an AddEntry
+            // journal field, whose explicit before state is a missing entry.
+            MISSING_ENTRY_VALUE
+        });
+        let expected_before_hash = if previous_observed_value_hash.is_some() {
+            expected_before_hash.to_owned()
+        } else {
+            stable_hash(expected_before_hash)
+        };
+
+        let write_journal_field_id = self
+            .connection
+            .query_row(
+                "SELECT wjf.id
+                 FROM write_journal_field wjf
+                 JOIN write_journal wj ON wj.id = wjf.write_journal_id
+                 JOIN collection_entry ce ON ce.id = ?1
+                 LEFT JOIN collection_snapshot_state css
+                   ON css.account_id = ce.account_id
+                  AND css.provider = ce.provider
+                  AND css.media_kind = ce.media_kind
+                 WHERE wj.provider = ce.provider
+                   AND wj.account_id = ce.account_id
+                   AND wj.result_status = 'succeeded'
+                   AND wjf.work_id = ce.work_id
+                   AND wjf.media_kind = ce.media_kind
+                   AND wjf.target_provider_entry_id = ce.provider_entry_id
+                   AND wjf.field_name = ?2
+                   AND wjf.expected_value_hash = ?3
+                   AND wjf.before_value_hash = ?4
+                   AND (
+                        (
+                            wjf.basis_observation_version IS NULL
+                            AND ?5 IS NULL
+                            AND wjf.basis_snapshot_generation = COALESCE(css.generation, 0)
+                        )
+                        OR (
+                            wjf.basis_observation_version <= ?5
+                            AND ?6 <= wjf.basis_observation_version
+                        )
+                   )
+                   AND wjf.consumed_at IS NULL
+                 ORDER BY wj.id DESC
+                 LIMIT 1",
+                params![
+                    collection_entry_id,
+                    field.as_str(),
+                    observed_value_hash,
+                    expected_before_hash,
+                    previous_observation_version,
+                    previous_last_changed_observation_version,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+
+        Ok(write_journal_field_id)
+    }
+}
+
+fn default_writable_fields() -> [SyncField; 5] {
+    [
+        SyncField::Status,
+        SyncField::Score,
+        SyncField::ProgressEpisodes,
+        SyncField::ProgressChapters,
+        SyncField::ProgressVolumes,
+    ]
 }
 
 fn split_aliases(value: &str) -> Vec<String> {
@@ -2192,6 +3405,32 @@ fn collection_status_from_str(value: &str) -> CollectionStatus {
         "dropped" => CollectionStatus::Dropped,
         "planned" => CollectionStatus::Planned,
         other => panic!("unknown collection status stored in sqlite: {other}"),
+    }
+}
+
+fn sync_field_from_str(value: &str) -> SyncField {
+    match value {
+        "status" => SyncField::Status,
+        "score" | "score_hundred" => SyncField::Score,
+        "progress_episodes" => SyncField::ProgressEpisodes,
+        "progress_chapters" => SyncField::ProgressChapters,
+        "progress_volumes" => SyncField::ProgressVolumes,
+        "repeat_count" => SyncField::RepeatCount,
+        "started_at" => SyncField::StartedAt,
+        "completed_at" => SyncField::CompletedAt,
+        "notes" => SyncField::Notes,
+        "tags" => SyncField::Tags,
+        other => panic!("unknown sync field stored in sqlite: {other}"),
+    }
+}
+
+fn field_observation_change_origin_from_str(value: &str) -> FieldObservationChangeOrigin {
+    match value {
+        "initial" => FieldObservationChangeOrigin::Initial,
+        "unchanged" => FieldObservationChangeOrigin::Unchanged,
+        "external" => FieldObservationChangeOrigin::External,
+        "tool_write" => FieldObservationChangeOrigin::ToolWrite,
+        other => panic!("unknown field observation change origin stored in sqlite: {other}"),
     }
 }
 
@@ -2326,15 +3565,4 @@ fn optional_u32(value: Option<i64>) -> Option<u32> {
     value.map(|value| {
         u32::try_from(value).unwrap_or_else(|_| panic!("sqlite value out of u32 range: {value}"))
     })
-}
-
-fn stable_hash(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-
-    format!("fnv1a64:{hash:016x}")
 }

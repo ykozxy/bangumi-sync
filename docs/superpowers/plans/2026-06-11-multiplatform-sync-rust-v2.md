@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to execute this plan. Use sub-agents for independent research, API adapter tests, matcher validation, and migration checks. Do not write to real user accounts. Do not merge this branch into `master` or `main`.
 
-Status: execution in progress. Phases 1-5A and parts of Phases 6-7 exist in the pre-alpha implementation; live writes remain disabled.
+Status: execution in progress. Phases 1-5A, the core Phase 6 planner, and parts of Phase 7 exist in the pre-alpha implementation; live writes remain disabled.
 Date: 2026-06-11
 Last reviewed: 2026-07-11
 Branch: `codex/rust-sync-v2`
@@ -322,6 +322,13 @@ Exit criteria:
 ## Phase 6: Sync Planner Dry-Run
 
 **Purpose:** Produce safe sync plans without modifying remote accounts.
+
+Implementation note (2026-07-11): field-level planning now uses rolling local
+observations and completed write-journal attribution before timestamp fallback.
+It rejects multiple external changes, unrepresentable optional clears, stale
+source/target plans, and ambiguous replay; three-provider partial writes are
+covered through convergence to a zero-action plan. Operational report polish
+and real read-only snapshot review remain open.
 
 Files to add:
 
