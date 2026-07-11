@@ -435,10 +435,10 @@ fn field_level_source_providers(entries: &[PlanningCollectionEntry]) -> Vec<(Syn
     .collect()
 }
 
-fn unique_reliable_outlier_source<'a>(
-    entries: &'a [PlanningCollectionEntry],
+fn unique_reliable_outlier_source(
+    entries: &[PlanningCollectionEntry],
     field: SyncField,
-) -> Option<&'a PlanningCollectionEntry> {
+) -> Option<&PlanningCollectionEntry> {
     let mut value_counts: HashMap<String, usize> = HashMap::new();
     for entry in entries {
         let Some(value) = field_value_opt(entry, field) else {

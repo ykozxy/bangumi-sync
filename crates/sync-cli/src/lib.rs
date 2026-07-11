@@ -1646,6 +1646,7 @@ fn write_json_auth_begin<W>(
     let _ = writeln!(stdout);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_text_auth_status<W>(
     stdout: &mut W,
     provider: Provider,
@@ -1686,6 +1687,7 @@ fn write_text_auth_status<W>(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_json_auth_status<W>(
     stdout: &mut W,
     provider: Provider,
@@ -1727,6 +1729,7 @@ fn write_json_auth_status<W>(
     let _ = writeln!(stdout);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn auth_begin_session_json(
     provider: Provider,
     client_id: &str,
@@ -4063,6 +4066,9 @@ where
     0
 }
 
+// Keep the injected auth, token, credential, and read transports explicit at
+// the CLI orchestration boundary. This avoids silently selecting live effects.
+#[allow(clippy::too_many_arguments)]
 fn refresh_plan_with_read_transport<T>(
     store: &SqliteStore,
     account_id: &str,
@@ -4124,6 +4130,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_text_refresh_plan<W>(
     stdout: &mut W,
     outcome: &StoredProviderSyncCycleOutcome,
@@ -4207,6 +4214,7 @@ fn write_text_import_summaries<W>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_json_refresh_plan<W>(
     stdout: &mut W,
     outcome: &StoredProviderSyncCycleOutcome,
@@ -4400,9 +4408,9 @@ where
 fn infer_request_media_kind(request: &ProviderReadRequest) -> Option<MediaKind> {
     match request.provider {
         Provider::Bangumi => {
-            if is_bangumi_episode_collection_request(request) {
-                Some(MediaKind::Anime)
-            } else if request.url.contains("subject_type=2") {
+            if is_bangumi_episode_collection_request(request)
+                || request.url.contains("subject_type=2")
+            {
                 Some(MediaKind::Anime)
             } else if request.url.contains("subject_type=1") {
                 Some(MediaKind::Manga)
@@ -5064,6 +5072,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_text_sync_applied<W>(
     stdout: &mut W,
     imports: &[sync_core::sync::ProviderSnapshotImportSummary],
@@ -5158,6 +5167,7 @@ fn write_text_sync_credentials_required<W>(
     write_text_import_summaries(stdout, imports);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_json_sync_applied<W>(
     stdout: &mut W,
     imports: &[sync_core::sync::ProviderSnapshotImportSummary],
@@ -5209,6 +5219,7 @@ fn write_json_sync_applied<W>(
     let _ = writeln!(stdout);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_text_sync_blocked_conflicts<W>(
     stdout: &mut W,
     imports: &[sync_core::sync::ProviderSnapshotImportSummary],
@@ -5250,6 +5261,7 @@ fn write_text_sync_blocked_conflicts<W>(
     write_text_plan_preview(stdout, plan);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_json_sync_blocked_conflicts<W>(
     stdout: &mut W,
     imports: &[sync_core::sync::ProviderSnapshotImportSummary],
@@ -6250,10 +6262,7 @@ fn token_response_path_map(inputs: &[ProviderTokenResponseInput]) -> HashMap<Pro
         .collect()
 }
 
-fn provider_scoped_value<'a>(
-    inputs: &'a [ProviderScopedValue],
-    provider: Provider,
-) -> Option<&'a str> {
+fn provider_scoped_value(inputs: &[ProviderScopedValue], provider: Provider) -> Option<&str> {
     inputs
         .iter()
         .find(|input| input.provider == provider)

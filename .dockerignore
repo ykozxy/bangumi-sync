@@ -5,6 +5,7 @@ build
 cache
 log
 target
+.sync-v2
 asset
 
 Dockerfile*

@@ -63,6 +63,9 @@ pub struct ProviderSyncCredentialRefreshConfig {
     pub client_secret: Option<String>,
 }
 
+// The cycle coordinator intentionally receives each side-effect boundary rather
+// than constructing network or credential implementations internally.
+#[allow(clippy::too_many_arguments)]
 pub fn refresh_snapshots_and_plan_dry_run_with_auto_refresh<S, R, T>(
     store: &SqliteStore,
     account_id: &str,
@@ -112,6 +115,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn refresh_snapshots_and_plan_dry_run_with_stored_access_tokens<S, T>(
     store: &SqliteStore,
     account_id: &str,

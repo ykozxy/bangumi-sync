@@ -84,6 +84,9 @@ impl From<StoreError> for StoredProviderCollectionImportError {
     }
 }
 
+// This public orchestration boundary keeps credential and transport dependencies
+// explicit; callers should not be able to construct a partially configured read.
+#[allow(clippy::too_many_arguments)]
 pub fn fetch_collection_snapshot_with_stored_access_token<S, T>(
     store: &SqliteStore,
     provider: Provider,
@@ -127,6 +130,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn import_collection_snapshot_pages_with_stored_access_token<S, T>(
     store: &SqliteStore,
     provider: Provider,
@@ -257,6 +261,7 @@ where
     Ok(episode_snapshots)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn fetch_collection_snapshot_pages_with_stored_access_token<S, T>(
     store: &SqliteStore,
     provider: Provider,

@@ -4,6 +4,22 @@
 
 **一个自动同步所有 Bangumi 动画收视记录到 Anilist 的脚本.**
 
+## Rust v2（开发中）
+
+仓库中同时包含实验性的 Rust v2，它面向 Bangumi、AniList、MyAnimeList
+三平台以及动画和漫画。当前版本属于 pre-alpha：本地 fixture、身份匹配、SQLite、
+dry-run 计划和 mock 写入验证已可用，但真实平台写入仍被禁用，不能替代下方的
+TypeScript 版本。
+
+安全的本地验证命令：
+
+```bash
+cargo test --workspace
+cargo run -p sync-cli -- --help
+```
+
+当前能力、限制和下一里程碑见 [Rust v2 状态](docs/rust-v2-status.md)。
+
 ## 安装
 
 本项目依赖于 [Node.js](https://nodejs.org) 环境。 在终端中运行以下命令下载项目并安装依赖：

@@ -632,6 +632,7 @@ impl ProviderWriteHttpClient for RecordingWriteHttpClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn planned_action(
     source_provider: Provider,
     target_provider: Provider,

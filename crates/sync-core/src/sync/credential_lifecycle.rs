@@ -149,6 +149,8 @@ where
     }
 }
 
+// Keep the secret store and token transport explicit at this security boundary.
+#[allow(clippy::too_many_arguments)]
 pub fn refresh_stored_provider_credential_if_needed<T, S>(
     store: &SqliteStore,
     provider: Provider,

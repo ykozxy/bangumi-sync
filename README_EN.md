@@ -4,6 +4,24 @@
 
 **A script that automatically syncs all anime collections from bgm.tv to Anilist.**
 
+## Rust v2 (in development)
+
+This repository also contains an experimental Rust v2 for Bangumi, AniList,
+and MyAnimeList across anime and manga. It is currently pre-alpha: local
+fixtures, identity matching, SQLite storage, dry-run planning, and mock write
+verification work, but live provider writes remain disabled. It does not yet
+replace the TypeScript baseline documented below.
+
+Safe local verification commands:
+
+```bash
+cargo test --workspace
+cargo run -p sync-cli -- --help
+```
+
+See [Rust v2 status](docs/rust-v2-status.md) for current capabilities, limits,
+and the next milestone.
+
 ## Installation
 
 This project used [Node.js](https://nodejs.org) environment. To clone the project and install dependencies, run the

@@ -1011,6 +1011,9 @@ where
     }
 }
 
+// OAuth exchange is an integration boundary whose inputs must stay explicit so
+// secrets and refresh fallback state are not hidden in a broadly cloneable bag.
+#[allow(clippy::too_many_arguments)]
 fn exchange_provider_oauth_token_with_refresh_fallback<T, S>(
     request: &ProviderOAuthTokenRequest,
     account_id: &str,

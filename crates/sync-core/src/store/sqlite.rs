@@ -2034,6 +2034,9 @@ impl SqliteStore {
         Ok(id)
     }
 
+    // Keep the normalized field set explicit at the SQLite boundary. This will
+    // be replaced by historical observations when provenance becomes versioned.
+    #[allow(clippy::too_many_arguments)]
     fn refresh_field_provenance(
         &self,
         collection_entry_id: i64,

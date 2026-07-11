@@ -1,7 +1,8 @@
 # Multiplatform Sync Rust v2 Design
 
-Status: draft planning artifact. Source implementation is gated on explicit user approval.
+Status: implementation in progress (pre-alpha). Live provider writes remain gated on explicit user approval and throwaway-account verification.
 Date: 2026-06-11
+Last reviewed: 2026-07-11
 Branch: `codex/rust-sync-v2`
 
 ## Purpose
