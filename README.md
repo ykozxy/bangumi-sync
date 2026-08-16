@@ -1,3 +1,5 @@
+
+
 # Bangumi-Sync
 
 > 中文 | [English](README_EN.md)
@@ -71,7 +73,7 @@ npm run token
 
 因为本项目未能做到 100% 的自动匹配，所以可以通过编辑 `config/manual_relations.json` 来手动添加条目匹配或编辑 `config/ignore_entries.json` 来忽略某些条目。
 
-`manual_relation.json` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
+`manual_relations.json` 中的每一项应为 `[bangumi_id, anilist_id]` 的形式，代表强制将这两个条目进行匹配。
 
 `ignore_entries.json` 中的每一项应为对应平台的 ID，遇到与这些 ID 相同的条目时将会忽略它们。
 
