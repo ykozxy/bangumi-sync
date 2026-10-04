@@ -10,7 +10,6 @@ export interface AnimeCollection {
     comments?: string;
 
     update_time: Date;
-    completed_at?: Date;
 }
 
 

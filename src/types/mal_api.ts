@@ -22,7 +22,6 @@ export interface MalListStatus {
     num_episodes_watched: number;
     is_rewatching: boolean;
     updated_at: string;
-    finish_date?: string;
     comments: string;
 }
 

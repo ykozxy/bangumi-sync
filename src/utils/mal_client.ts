@@ -61,7 +61,7 @@ class MalClient {
      */
     public async getAnimeCollection(): Promise<{ node: { id: number; title: string }; list_status: MalListStatus }[] | null> {
         let result: { node: { id: number; title: string }; list_status: MalListStatus }[] = [];
-        let url: string | null = `${this.api_url}/users/@me/animelist?fields=list_status{status,score,num_episodes_watched,comments,updated_at,finish_date}&limit=1000&nsfw=true`;
+        let url: string | null = `${this.api_url}/users/@me/animelist?fields=list_status{status,score,num_episodes_watched,comments,updated_at}&limit=1000&nsfw=true`;
 
         while (url) {
             await this.limiter.removeTokens(1);
@@ -101,13 +101,6 @@ class MalClient {
         }
         if (syncComment && collection.comments) {
             params.append("comments", collection.comments);
-        }
-        // Sync finish date when status is Completed
-        if (collection.status === CollectionStatus.Completed && collection.completed_at) {
-            const y = collection.completed_at.getFullYear();
-            const m = String(collection.completed_at.getMonth() + 1).padStart(2, '0');
-            const d = String(collection.completed_at.getDate()).padStart(2, '0');
-            params.append("finish_date", `${y}-${m}-${d}`);
         }
 
         await this.limiter.removeTokens(1);
