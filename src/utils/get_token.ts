@@ -5,7 +5,7 @@ import {config} from "./config_util";
 
 (async () => {
     await bangumiClient.autoUpdateToken();
-    if (config.sync_to_anilist !== false) {
+    if (config.sync_to_anilist) {
         await anilistClient.autoUpdateToken();
     }
     if (config.sync_to_mal) {

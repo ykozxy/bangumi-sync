@@ -26,7 +26,7 @@ async function singleMode(userConfirm: boolean) {
     autoLog("Initializing...", "Main")
     await buildDatabase();
     await bangumiClient.autoUpdateToken();
-    if (config.sync_to_anilist !== false) {
+    if (config.sync_to_anilist) {
         await anilistClient.autoUpdateToken();
     }
     if (config.sync_to_mal) {
@@ -38,7 +38,7 @@ async function singleMode(userConfirm: boolean) {
     autoLog("Fetching Bangumi collections...", "Main")
     let bangumiCollection = await getBangumiCollections();
     let anilistCollection: any[] = [];
-    if (config.sync_to_anilist !== false) {
+    if (config.sync_to_anilist) {
         autoLog("Fetching Anilist collections...", "Main")
         anilistCollection = await getAnilistCollections();
     }
@@ -52,7 +52,7 @@ async function singleMode(userConfirm: boolean) {
 
     // --- Anilist Sync ---
     let changeLog: { before?: any, after: any }[] = [];
-    if (config.sync_to_anilist !== false) {
+    if (config.sync_to_anilist) {
         autoLog("Generating Anilist changelog...", "Main");
         changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
         for (let change of changeLog) {
@@ -145,7 +145,7 @@ async function serverMode() {
     // Setup token auto-refresh every hour
     const refreshToken = async () => {
         await bangumiClient.autoUpdateToken();
-        if (config.sync_to_anilist !== false) {
+        if (config.sync_to_anilist) {
             await anilistClient.autoUpdateToken();
         }
         if (config.sync_to_mal) {
@@ -166,7 +166,7 @@ async function serverMode() {
         autoLog("Fetching Bangumi collections...", "Main");
         let bangumiCollection = await getBangumiCollections();
         let anilistCollection: any[] = [];
-        if (config.sync_to_anilist !== false) {
+        if (config.sync_to_anilist) {
             autoLog("Fetching Anilist collections...", "Main");
             anilistCollection = await getAnilistCollections();
         }
@@ -175,7 +175,7 @@ async function serverMode() {
         bangumiCollection = await fillBangumiCollection(bangumiCollection);
 
         // --- Anilist Sync ---
-        if (config.sync_to_anilist !== false) {
+        if (config.sync_to_anilist) {
             autoLog("Generating Anilist changelog...", "Main");
             let changeLog = await generateChangelog(bangumiCollection, anilistCollection, config.sync_comments);
 
