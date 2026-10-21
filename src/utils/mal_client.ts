@@ -21,8 +21,27 @@ class MalClient {
     private readonly limiter: RateLimiter;
     private readonly api_url: string = "https://api.myanimelist.net/v2";
     private readonly oauth_url: string = "https://myanimelist.net/v1/oauth2";
-    private readonly client_id: string = "TODO";
-    private readonly client_secret: string = "TODO";
+    private get client_id(): string {
+        const id = process.env.MAL_CLIENT_ID?.trim();
+        if (!id || id === "TODO") {
+            throw new Error("MAL sync requires MAL_CLIENT_ID. Register an app at https://myanimelist.net/apiconfig with redirect URI http://localhost:3500 and set MAL_CLIENT_ID before starting.");
+        }
+        return id;
+    }
+
+    private get client_secret(): string | undefined {
+        const secret = process.env.MAL_CLIENT_SECRET?.trim();
+        if (secret === "TODO") {
+            throw new Error("Replace MAL_CLIENT_SECRET with your app's secret, or unset it for a public client.");
+        }
+        return secret || undefined;
+    }
+
+    public validateConfiguration(): void {
+        // Validate only when MAL is enabled, before opening any login pages.
+        void this.client_id;
+        void this.client_secret;
+    }
     private readonly token = {
         access_token: "",
         refresh_token: "",
@@ -99,8 +118,8 @@ class MalClient {
         if (collection.score > 0) {
             params.append("score", String(collection.score));
         }
-        if (syncComment && collection.comments) {
-            params.append("comments", collection.comments);
+        if (syncComment) {
+            params.append("comments", collection.comments ?? "");
         }
 
         await this.limiter.removeTokens(1);
@@ -147,6 +166,7 @@ class MalClient {
      * Automatically load and check user token. If token is expired, prompt user to login.
      */
     public async autoUpdateToken() {
+        this.validateConfiguration();
         // Load token from file
         if (!this.tokenExists()) {
             this.loadToken();
@@ -180,6 +200,7 @@ class MalClient {
     }
 
     private async getToken() {
+        this.validateConfiguration();
         // Handle server mode
         if (isServerMode) {
             autoLog("MAL token expired. Please run `npm run token` to get new token.", "MAL", LogLevel.Error);
@@ -198,43 +219,54 @@ class MalClient {
 
         // Generate PKCE code verifier (plain method)
         const codeVerifier = crypto.randomBytes(64).toString("base64url").substring(0, 128);
-
-        // Setup callback server
-        let code: string = "";
-        const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-            const html = "<html lang='en'><head><title>[BGM-Sync] MAL Token generated</title></head><body><h1>MAL Token generated! Please close this window.</h1></body></html>";
-            response.writeHead(200, {
-                "Content-Type": "text/html",
-                "Content-Length": Buffer.byteLength(html),
-            });
-            response.end(html);
-
-            if (request.url?.includes("?code=")) {
-                const url = new URL(request.url, "http://localhost:3500");
-                code = url.searchParams.get("code") || "";
-            }
-            server.close();
+        const state = crypto.randomBytes(32).toString("hex");
+        const authParams = new URLSearchParams({
+            response_type: "code",
+            client_id: this.client_id,
+            code_challenge: codeVerifier,
+            code_challenge_method: "plain",
+            redirect_uri: "http://localhost:3500",
+            state,
         });
-        server.listen(3500);
-
-        const auth_url = `${this.oauth_url}/authorize?response_type=code&client_id=${this.client_id}&client_secret=${this.client_secret}&code_challenge=${codeVerifier}&code_challenge_method=plain&redirect_uri=http://localhost:3500`;
-        autoLog(`If auto open browser failed, please visit this link manually to authorize with MAL: ${auth_url}`, "MAL");
-        await open(auth_url);
-
-        await new Promise((resolve) => {
-            function check() {
-                if (code) resolve(code);
-                else setTimeout(check, 500);
-            }
-
-            check();
+        const auth_url = `${this.oauth_url}/authorize?${authParams}`;
+        const code = await new Promise<string>((resolve, reject) => {
+            const finish = (error?: Error, code?: string) => {
+                clearTimeout(timeout);
+                server.close();
+                if (error) reject(error);
+                else resolve(code!);
+            };
+            const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+                const callback = new URL(request.url || "/", "http://localhost:3500");
+                if (callback.pathname !== "/" || callback.searchParams.get("state") !== state) {
+                    response.writeHead(400);
+                    response.end("Invalid OAuth callback. Please use the MAL authorization page.");
+                    return;
+                }
+                const code = callback.searchParams.get("code");
+                if (callback.searchParams.has("error") || !code) {
+                    response.writeHead(400);
+                    response.end("MAL authorization failed. Please retry from the terminal.");
+                    finish(new Error("MAL authorization was denied or returned no code."));
+                    return;
+                }
+                response.writeHead(200, {"Content-Type": "text/plain; charset=utf-8"});
+                response.end("MAL authorization received. You can close this window.");
+                finish(undefined, code);
+            });
+            const timeout = setTimeout(() => finish(new Error("MAL authorization timed out. Please retry.")), 5 * 60 * 1000);
+            server.once("error", () => finish(new Error("Cannot start MAL callback on localhost:3500. Check whether the port is in use.")));
+            server.listen(3500, "localhost", () => {
+                autoLog(`Authorize with MAL: ${auth_url}`, "MAL");
+                open(auth_url).catch(() => autoLog("Could not open the browser. Open the authorization link above manually.", "MAL", LogLevel.Warn));
+            });
         });
 
         // Exchange code for token
         const token_url = `${this.oauth_url}/token`;
         const params = new URLSearchParams();
         params.append("client_id", this.client_id);
-        params.append("client_secret", this.client_secret);
+        if (this.client_secret) params.append("client_secret", this.client_secret);
         params.append("grant_type", "authorization_code");
         params.append("code", code);
         params.append("redirect_uri", "http://localhost:3500");
@@ -251,8 +283,8 @@ class MalClient {
             this.token.token_type = token.token_type;
         } catch (e: any) {
             autoLog("Failed to get MAL token.", "MAL", LogLevel.Error);
-            autoLogException(e as Error);
-            process.exit(1);
+            // Axios errors can contain the token request body and client secret.
+            throw new Error(`Failed to get MAL token (HTTP ${e.response?.status ?? "network error"}). Check your MAL app configuration and retry.`);
         }
     }
 
@@ -260,7 +292,7 @@ class MalClient {
         const url = `${this.oauth_url}/token`;
         const params = new URLSearchParams();
         params.append("client_id", this.client_id);
-        params.append("client_secret", this.client_secret);
+        if (this.client_secret) params.append("client_secret", this.client_secret);
         params.append("grant_type", "refresh_token");
         params.append("refresh_token", this.token.refresh_token);
 
@@ -276,7 +308,7 @@ class MalClient {
             return true;
         } catch (e: any) {
             autoLog("Failed to refresh MAL token.", "MAL", LogLevel.Error);
-            autoLogException(e as Error);
+            autoLog(`MAL token refresh failed (HTTP ${e.response?.status ?? "network error"}).`, "MAL", LogLevel.Error);
             return false;
         }
     }

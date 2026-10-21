@@ -524,7 +524,9 @@ export async function fillAnilistCollection(anilistCollection: AnimeCollection[]
 export async function generateChangelog(bangumiCollection: AnimeCollection[], anilistCollection: AnimeCollection[], syncComment: boolean, backward: boolean = false): Promise<{ before?: AnimeCollection, after: AnimeCollection }[]> {
     let result: { before?: AnimeCollection, after: AnimeCollection }[] = [];
 
-    for (let bangumi of bangumiCollection) {
+    for (const source of bangumiCollection) {
+        // Each destination owns its update; never mutate the shared source.
+        const bangumi = {...source};
         if (!bangumi.mal_id && !bangumi.anilist_id) continue;
 
         // Fix bangumi episode count
@@ -555,29 +557,21 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
             continue;
         }
 
-        // Sync ids
-        bangumi.mal_id = anilist.mal_id;
-        bangumi.anilist_id = anilist.anilist_id;
-        anilist.bgm_id = bangumi.bgm_id;
+        // Preserve known IDs when the destination only exposes its own ID.
+        bangumi.mal_id = anilist.mal_id || bangumi.mal_id;
+        bangumi.anilist_id = anilist.anilist_id || bangumi.anilist_id;
+        anilist = {...anilist, bgm_id: bangumi.bgm_id};
 
         // Syne titles
         if (!anilist.title) anilist.title = bangumi.title;
         if (!bangumi.title) bangumi.title = anilist.title;
 
-        // If bangumi score is 0 (unrated), preserve the existing anilist score
-        if (bangumi.score === 0 && anilist.score !== 0) {
-            bangumi.score = anilist.score;
-        }
-
-        // Compare entries for changes
-        if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes) {
-            result.push({
-                before: anilist,
-                after: bangumi,
-            });
-        }
-
-        if (syncComment && (anilist.comments || '') != (bangumi.comments || '')) {
+        // Zero means unrated: leave each destination's score untouched.
+        // Combine field and comment changes into one write per entry.
+        if ((bangumi.score > 0 && bangumi.score != anilist.score)
+            || bangumi.status != anilist.status
+            || bangumi.watched_episodes != anilist.watched_episodes
+            || (syncComment && (anilist.comments || '') != (bangumi.comments || ''))) {
             result.push({
                 before: anilist,
                 after: bangumi,
@@ -598,11 +592,8 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
 export function renderDiff(before: AnimeCollection | undefined, after: AnimeCollection, syncComment: boolean, join_str = "\n"): string {
     let results: string[] = [];
 
-    if (!before || before.score != after.score) {
-        // Skip score display when both are 0 (unrated) or when new entry has no score
-        if (after.score !== 0 || (before && before.score !== 0)) {
-            results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
-        }
+    if (after.score > 0 && (!before || before.score != after.score)) {
+        results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
     }
     if (!before || before.status != after.status) {
         results.push(`Status: ${before ? before.status : 'NA'} -> ${after.status}`);
