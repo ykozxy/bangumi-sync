@@ -187,7 +187,7 @@ class AnilistClient {
             const collections = grouped[key];
             const scoreRaw = collections[0].score > 0 ? collections[0].score * 10 : undefined; // Convert to 1-100 raw score scale, skip if unrated
             const progress = collections[0].watched_episodes;
-            const notes = syncComment ? collections[0].comments : undefined;
+            const notes = syncComment ? (collections[0].comments ?? "") : undefined;
             const status = AnilistClient.convertStatus(collections[0].status);
 
             const findAnilistId = async (c: AnimeCollection) => {
@@ -211,8 +211,9 @@ class AnilistClient {
                     const id = await findAnilistId(c);
                     if (id) {
                         c.anilist_id = id;
-                        await this.saveEntry(c, syncComment);
-                        successCount++;
+                        if (await this.saveEntry(c, syncComment)) {
+                            successCount++;
+                        }
                     }
                     incrementProgressBar();
                 }
@@ -288,7 +289,7 @@ class AnilistClient {
             mediaId: Number(collection.anilist_id),
             status: AnilistClient.convertStatus(collection.status),
             progress: collection.watched_episodes,
-            notes: syncComment ? collection.comments : undefined,
+            notes: syncComment ? (collection.comments ?? "") : undefined,
         };
         // Only set scoreRaw when score is non-zero (rated)
         if (collection.score > 0) {

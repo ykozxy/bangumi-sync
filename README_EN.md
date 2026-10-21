@@ -55,6 +55,27 @@ You can also use the above command to refresh the token if it expires or is miss
 
 ## Configuration
 
+### MyAnimeList sync
+
+AniList sync is enabled by default (`sync_to_anilist: true`). To also sync to MyAnimeList, set `sync_to_mal: true` in `config/config.json`. Set `sync_to_anilist: false` for MAL-only sync.
+
+Register your own application at [MAL API configuration](https://myanimelist.net/apiconfig) with redirect URI `http://localhost:3500`. Set `MAL_CLIENT_ID` in the environment of the process running this script. If your application has a client secret, also set `MAL_CLIENT_SECRET`; public clients can leave it unset. Follow [MAL's authorization documentation](https://myanimelist.net/apiconfig/references/authorization) when registering the application.
+
+For example, in PowerShell:
+
+```powershell
+$env:MAL_CLIENT_ID = "your-client-id"
+# Only if your registered application has a secret:
+$env:MAL_CLIENT_SECRET = "your-client-secret"
+npm run token
+```
+
+On Linux/macOS, use `export MAL_CLIENT_ID='your-client-id'` and, if needed, `export MAL_CLIENT_SECRET='your-client-secret'` before running `npm run token`. Keep the same variables available for subsequent sync runs and pass them to the Docker container if used. Environment variables are read directly; `.env` files are not loaded automatically. Do not commit credentials to this repository.
+
+A missing client ID stops MAL sync with a configuration error. Bangumi score `0` means unrated and leaves each destination's score unchanged. With `sync_comments: true`, an empty Bangumi comment clears the destination comment.
+
+### Settings
+
 The configuration file is `config/config.json`, where the configurable fields are:
 
 | Field                       | Description                                                                                   | Parameters                         |

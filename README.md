@@ -52,6 +52,27 @@ npm run token
 
 ## 配置
 
+### MyAnimeList 同步
+
+默认启用 AniList 同步（`sync_to_anilist: true`）。如需同时同步到 MyAnimeList，在 `config/config.json` 中设置 `sync_to_mal: true`；仅同步 MAL 时再设置 `sync_to_anilist: false`。
+
+在 [MAL API 配置页](https://myanimelist.net/apiconfig) 注册自己的应用，回调地址填写 `http://localhost:3500`。为运行脚本的进程设置环境变量 `MAL_CLIENT_ID`。如果应用有 client secret，还需设置 `MAL_CLIENT_SECRET`；没有 secret 的公共客户端可不设置。注册方式见 [MAL 授权文档](https://myanimelist.net/apiconfig/references/authorization)。
+
+PowerShell 示例：
+
+```powershell
+$env:MAL_CLIENT_ID = "your-client-id"
+# 仅在注册的应用有 secret 时设置：
+$env:MAL_CLIENT_SECRET = "your-client-secret"
+npm run token
+```
+
+Linux/macOS 使用 `export MAL_CLIENT_ID='your-client-id'`，需要 secret 时再设置 `export MAL_CLIENT_SECRET='your-client-secret'`，然后运行 `npm run token`。后续同步也需要这些环境变量；使用 Docker 时需传入容器。程序直接读取环境变量，不会自动加载 `.env` 文件。不要把凭据提交到仓库。
+
+缺少 client ID 时，MAL 同步会明确报错并停止。Bangumi 评分为 `0` 表示未评分，会保留各目标平台的评分；开启 `sync_comments` 时，Bangumi 的空评论会清空目标评论。
+
+### 配置项
+
 配置文件为 `config/config.json`，其中可配置内容为：
 
 | 变量                          | 描述                                             | 可选参数                               |

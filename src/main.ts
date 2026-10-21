@@ -17,6 +17,7 @@ import {isServerMode, sleep} from "./utils/util";
 import {config, reloadConfig} from "./utils/config_util";
 
 async function singleMode(userConfirm: boolean) {
+    if (config.sync_to_mal) malClient.validateConfiguration();
     // Validate sync targets
     if (!config.sync_to_anilist && !config.sync_to_mal) {
         autoLog("At least one of sync_to_anilist or sync_to_mal must be true.", "Main");
@@ -133,6 +134,7 @@ async function singleMode(userConfirm: boolean) {
 }
 
 async function serverMode() {
+    if (config.sync_to_mal) malClient.validateConfiguration();
     // Validate sync targets
     if (!config.sync_to_anilist && !config.sync_to_mal) {
         autoLog("At least one of sync_to_anilist or sync_to_mal must be true.", "Main");
