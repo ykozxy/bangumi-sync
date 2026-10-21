@@ -157,7 +157,7 @@ class AnilistClient {
         const variables: {
             ids: number[],
             status: MediaListStatus,
-            scoreRaw: number,
+            scoreRaw?: number,
             progress: number,
             notes?: string,
             completedAt?: {
@@ -185,7 +185,7 @@ class AnilistClient {
         // Construct variables
         for (const key in grouped) {
             const collections = grouped[key];
-            const scoreRaw = collections[0].score * 10; // Convert to 1-100 raw score scale
+            const scoreRaw = collections[0].score > 0 ? collections[0].score * 10 : undefined; // Convert to 1-100 raw score scale, skip if unrated
             const progress = collections[0].watched_episodes;
             const notes = syncComment ? collections[0].comments : undefined;
             const status = AnilistClient.convertStatus(collections[0].status);
@@ -252,7 +252,12 @@ class AnilistClient {
 
         // Update
         for (let variable of variables) {
-            await this.query(query, variable);
+            let result = await this.query(query, variable);
+            if (!result) {
+                autoLog(`Batch update failed (retries exhausted), skipping ${variable.ids.length} entries.`, "Anilist.smartUpdateCollection", LogLevel.Error);
+                incrementProgressBar(variable.ids.length);
+                continue;
+            }
             incrementProgressBar(variable.ids.length);
             successCount += variable.ids.length;
         }
@@ -279,19 +284,25 @@ class AnilistClient {
                 }
             }
         `;
-        let variables = {
+        let variables: any = {
             mediaId: Number(collection.anilist_id),
             status: AnilistClient.convertStatus(collection.status),
-            scoreRaw: collection.score * 10,
             progress: collection.watched_episodes,
             notes: syncComment ? collection.comments : undefined,
         };
-        let result = await this.query(query, variables);
-        if (result.SaveMediaListEntry) {
-            this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
-            return true;
+        // Only set scoreRaw when score is non-zero (rated)
+        if (collection.score > 0) {
+            variables.scoreRaw = collection.score * 10;
         }
-        return false;
+        let result = await this.query(query, variables);
+        if (!result || !result.SaveMediaListEntry) {
+            if (!result) {
+                autoLog(`Failed to save ${collection.title} (anilist=${collection.anilist_id}), query returned null (retries exhausted).`, "Anilist.saveEntry", LogLevel.Error);
+            }
+            return false;
+        }
+        this.media_to_entry_id.set(collection.anilist_id, result.SaveMediaListEntry.id);
+        return true;
     }
 
     /**

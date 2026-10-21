@@ -1,6 +1,8 @@
 import {anilistClient} from "./anilist_client";
+import {malClient} from "./mal_client";
 import {AnimeCollection, CollectionStatus} from "../types/anime_collection";
 import {MediaFormat, MediaListStatus} from "../types/anilist_api";
+import {MalWatchStatus} from "../types/mal_api";
 import {bangumiClient} from "./bangumi_client";
 import Scheduler from "./scheduler";
 import {
@@ -120,6 +122,53 @@ export async function getBangumiCollections(): Promise<AnimeCollection[]> {
             status,
             update_time: new Date(entry.updated_at),
             watched_episodes: entry.ep_status,
+        });
+    }
+
+    return res;
+}
+
+/**
+ * @description Fetch user's MAL collections
+ */
+export async function getMalCollections(): Promise<AnimeCollection[]> {
+    let collection = await malClient.getAnimeCollection();
+    let res: AnimeCollection[] = [];
+    if (!collection) return res;
+
+    for (let item of collection) {
+        let status: CollectionStatus;
+        switch (item.list_status.status) {
+            case "watching":
+                status = CollectionStatus.Watching;
+                break;
+            case "completed":
+                status = CollectionStatus.Completed;
+                break;
+            case "on_hold":
+                status = CollectionStatus.OnHold;
+                break;
+            case "dropped":
+                status = CollectionStatus.Dropped;
+                break;
+            case "plan_to_watch":
+                status = CollectionStatus.PlanToWatch;
+                break;
+        }
+
+        // Skip if in ignore list
+        if (ignore_entries.mal.includes(item.node.id)) continue;
+
+        let update_time = item.list_status.updated_at ? new Date(item.list_status.updated_at) : new Date(0);
+
+        res.push({
+            title: item.node.title,
+            mal_id: String(item.node.id),
+            comments: item.list_status.comments,
+            score: item.list_status.score,
+            status,
+            update_time,
+            watched_episodes: item.list_status.num_episodes_watched,
         });
     }
 
@@ -491,11 +540,13 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
 
         // If the entry don't exist in to, add it to result
         let anilist = anilistCollection.find(col => {
-            if (bangumi.anilist_id) {
-                return col.anilist_id === bangumi.anilist_id;
-            } else {
-                return col.mal_id === bangumi.mal_id;
+            if (bangumi.anilist_id && col.anilist_id && col.anilist_id === bangumi.anilist_id) {
+                return true;
             }
+            if (bangumi.mal_id && col.mal_id && col.mal_id === bangumi.mal_id) {
+                return true;
+            }
+            return false;
         });
         if (!anilist) {
             result.push({
@@ -513,6 +564,11 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
         if (!anilist.title) anilist.title = bangumi.title;
         if (!bangumi.title) bangumi.title = anilist.title;
 
+        // If bangumi score is 0 (unrated), preserve the existing anilist score
+        if (bangumi.score === 0 && anilist.score !== 0) {
+            bangumi.score = anilist.score;
+        }
+
         // Compare entries for changes
         if (bangumi.score != anilist.score || bangumi.status != anilist.status || bangumi.watched_episodes != anilist.watched_episodes) {
             result.push({
@@ -521,7 +577,7 @@ export async function generateChangelog(bangumiCollection: AnimeCollection[], an
             });
         }
 
-        if (syncComment && anilist.comments != bangumi.comments) {
+        if (syncComment && (anilist.comments || '') != (bangumi.comments || '')) {
             result.push({
                 before: anilist,
                 after: bangumi,
@@ -543,7 +599,10 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     let results: string[] = [];
 
     if (!before || before.score != after.score) {
-        results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
+        // Skip score display when both are 0 (unrated) or when new entry has no score
+        if (after.score !== 0 || (before && before.score !== 0)) {
+            results.push(`Score: ${before ? before.score : 'NA'} -> ${after.score}`);
+        }
     }
     if (!before || before.status != after.status) {
         results.push(`Status: ${before ? before.status : 'NA'} -> ${after.status}`);
@@ -553,7 +612,7 @@ export function renderDiff(before: AnimeCollection | undefined, after: AnimeColl
     }
     if (syncComment) {
         if (before && before.comments != after.comments) {
-            results.push(`Comments: ${before ? before.comments : 'NA'} -> ${after.comments}`);
+            results.push(`Comments: ${before.comments || 'NA'} -> ${after.comments || 'NA'}`);
         } else if (!before && after.comments) {
             results.push(`Comments: NA -> ${after.comments}`);
         }
