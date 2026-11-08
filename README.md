@@ -107,7 +107,7 @@ Linux/macOS 使用 `export MAL_CLIENT_ID='your-client-id'`，需要 secret 时�
 
 ## 已知限制
 
-- 由于使用的 [anime-offline-database](https://github.com/manami-project/anime-offline-database) 数据库大小 (33mb) 超出了 jsdelivr
+- 由于使用的 [anime-offline-database](https://github.com/cedya77/anime-offline-database) 数据库大小 (33mb) 超出了 jsdelivr
   的文件大小限制，所以默认使用 github 源。因此国内用户可能会访问受限，体现于在初次加载脚本时的时间较长。
 - 因为 Anilist API 的访问频率限制为 90 requests/min，所以在单次同步条目过多时会触发流量限制并用时较长。
 - 目前使用的条目匹配算法需要对 30000+ 条 global 数据库条目进行逐一比对，所以首次匹配时间可能会较长。之后运行时由于会记录缓存所以速度会变快。
@@ -121,5 +121,5 @@ Linux/macOS 使用 `export MAL_CLIENT_ID='your-client-id'`，需要 secret 时�
 
 ## 数据来源
 
-- Global 动画数据：[manami-project/anime-offline-database](https://github.com/manami-project/anime-offline-database)
+- Global 动画数据：[cedya77/anime-offline-database](https://github.com/cedya77/anime-offline-database)
 - 国内动画数据：[bangumi-data](https://github.com/bangumi-data/bangumi-data)

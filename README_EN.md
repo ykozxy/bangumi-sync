@@ -132,5 +132,5 @@ and [sync_util.ts](src/utils/sync_util.ts).
 
 ## Data Sources
 
-- Global anime data：[manami-project/anime-offline-database](https://github.com/manami-project/anime-offline-database)
+- Global anime data：[cedya77/anime-offline-database](https://github.com/cedya77/anime-offline-database)
 - CN anime data：[bangumi-data](https://github.com/bangumi-data/bangumi-data)
